@@ -194,3 +194,14 @@ for.
 **`2560×1440 is ... above the ... px` with `upscale` missing.** That size is
 above the native ceiling. Either ask for a size that fits, or pass `--upscale`
 and accept that the extra pixels are synthesized.
+
+## License
+
+Apache License 2.0 — the full text is in [LICENSE](LICENSE).
+Copyright 2026 Juan Carlos Avila Pérez.
+
+The weights are **not** part of this repository and carry their own terms: the
+FP8 checkpoint's card declares Apache 2.0, the upscaler's repository is
+BSD-3-Clause, and each vendor card in `docs/reference/upstream/` states its own.
+A license on this code says nothing about a model you download.
+
