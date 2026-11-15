@@ -2,7 +2,7 @@
 
 ## Next step
 
-**P7 — the rename and the first commit.** P6 closed on 2026-11-15 with all eleven guards executable and green: twelve tests, 406.6 s, eight stills, and three consecutive runs producing the same `sha256 d155082c…` — determinism across separate server processes, not only within one. The project still carries a name that describes its first model rather than its function, so it is renamed `coltman-images-service`, the suite is re-run under the new name, one still is compared byte for byte with the pre-rename one, and version control begins with a first commit that invents no history before it.
+**No phase is open.** P7 closed on 2026-11-15: the project is `coltman-images-service`, the suite runs green under the new name, a still is byte-identical to the pre-rename one (`ff3b84a0…`), and the first commit exists — `552c9f3`, with no history invented before it. What remains is not build work: the operator's open decisions in protocol section 12, and one surface that is not yet declared as a phase — the web client, which a browser-facing UI will need.
 
 No phase may start before the previous one has an **observed** exit: a command whose output is the proof. A document is not an exit criterion.
 
@@ -16,7 +16,7 @@ No phase may start before the previous one has an **observed** exit: a command w
 | **P4** | The server process: warm-up, `run/server.json`, single-flight queue, `GET /health`, `POST /shutdown`, `POST /generate`, and the CLI's `start`/`stop`. `/generate` lands here rather than in P5 because a queue with no producer cannot be tested, and single-flight cannot be proven without two concurrent requests. | `start` returns after warm-up; `/health` answers warm; a second `start` exits 0 and reports the running server; `stop` releases the card and removes the state file; two concurrent requests both succeed and never run two models. | done, 2026-11-15 |
 | **P5** | `coltman-images generate` as the CLI client of the API, and the parity proof. | One prompt through the CLI writes the still (default folder or the requested path) and prints its path; a direct POST for the same seed produces the same bytes. | done, 2026-11-15 |
 | **P6** | The eleven guards of protocol section 10, at protocol section 10's thresholds. | The suite runs under the production interpreter; every guard passes or reports its failure as a failure. | done, 2026-11-15 |
-| **P7** | The rename and the first commit: the project stops being named after its first adapter (`coltman-images-service`), and version control stops being a debt. | The suite is green under the new name, a still is byte-identical to the pre-rename one, and `git log` shows a first commit with no history invented before it. | current |
+| **P7** | The rename and the first commit: the project stops being named after its first adapter (`coltman-images-service`), and version control stops being a debt. | The suite is green under the new name, a still is byte-identical to the pre-rename one, and `git log` shows a first commit with no history invented before it. | done, 2026-11-15 |
 | **P8** | Clients. This phase lives outside this project: the surface is already declared, and a client adapts to it. | Nothing here. | outside |
 
 ## P2 in order
