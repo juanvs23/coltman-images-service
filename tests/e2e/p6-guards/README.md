@@ -102,7 +102,7 @@ server's own lines are attributed to `__main__`.
 ## How to regenerate
 
 ```sh
-cd <this repository>
+cd coltman-images-service
 .venv/bin/python -m unittest discover -s tests -v
 ```
 

@@ -14,6 +14,10 @@ Nothing here may be used to re-open those decisions. A change to any of them is 
 
 These files name other projects, channels and vendor tooling because they are historical records of where the numbers came from. Those names are provenance, not dependency: the system reads nothing from them (protocol section 2).
 
+## Paths
+
+The absolute paths these records were written with have been replaced by placeholders — `<model store>`, `<predecessor>`, `<bench>`, `<the calling project>` — because the machine layout they described is not this project's business and one of them named a client's workspace. The substitution is editorial and it touched no number: every measurement in these files is exactly as it was recorded.
+
 ## The files
 
 | File | What it carries |

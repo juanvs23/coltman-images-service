@@ -50,7 +50,7 @@ Until that measurement exists, no document may claim one regime hallucinates les
 
 ### `[DEBT] no-version-control` — closed 2026-11-15
 
-Deferred because the operator's decision was open. Closed when the operator ordered version control: the repository exists, `git init` ran in `<this repository>`, and the first commit carries the state as it stood when the debt closed. No history was invented before it, and the ignore file keeps the weights, the venv, the run state and the test evidence out of the repository.
+Deferred because the operator's decision was open. Closed when the operator ordered version control: the repository exists, `git init` ran in the project root, and the first commit carries the state as it stood when the debt closed. No history was invented before it, and the ignore file keeps the weights, the venv, the run state and the test evidence out of the repository.
 
 ### `[DEBT] no-idle-timeout`
 

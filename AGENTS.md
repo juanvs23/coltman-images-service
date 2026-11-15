@@ -34,8 +34,8 @@ All commands below are declared, not built.
 
 ## Guardrails
 
-- Never read or write outside the project tree. The foreign stores this project copied from (`<model store>/` and `<component store>/`) were deleted on 2026-11-15; `model/assets/` holds the only copies of the weights.
-- Dependencies live in the project's own `.venv`, pinned in `requirements.txt`. The foreign venv under `<foreign store>/` is not a dependency and must not be modified.
+- Never read or write outside the project tree. The foreign stores this project copied from (a model store and a component store, both outside this tree) were deleted on 2026-11-15; `model/assets/` holds the only copies of the weights.
+- Dependencies live in the project's own `.venv`, pinned in `requirements.txt`. The foreign venv that store carried is not a dependency and must not be modified.
 - Never write outside the declared output paths and `run/`.
 - Never create a git repository without the operator's explicit order.
 - Never write secrets or `.env` into the project.

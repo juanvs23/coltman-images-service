@@ -14,8 +14,7 @@ The law of `coltman-images`. Every other document defers to this one. Where this
 
 ## 2. Self-containment
 
-The system reads exactly one thing: its own tree at
-`<this repository>/`.
+The system reads exactly one thing: its own tree.
 
 Everything it needs is inside that tree: the model entry, the assets in `model/assets/` (the project's own copies), the transformer config, and its own interpreter at `.venv/bin/python`, which carries its pinned dependencies.
 
