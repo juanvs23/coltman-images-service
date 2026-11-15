@@ -1,7 +1,10 @@
 # coltman-images — pinned dependencies for the project's own .venv (Python 3.14).
-# torch comes from the cu130 index:
-#   uv pip install --index-url https://download.pytorch.org/whl/cu130 torch==2.13.0+cu130
-# everything below is installed from PyPI on top of it.
+#
+# torch is NOT here: it comes from the cu130 index, which is the only place
+# 2.13.0+cu130 exists. Install it first:
+#   uv pip install --python .venv/bin/python \
+#     --index-url https://download.pytorch.org/whl/cu130 torch==2.13.0+cu130
+# Everything below then installs from PyPI on top of it.
 
 accelerate==1.12.0
 annotated-doc==0.0.6
@@ -63,7 +66,6 @@ setuptools==78.1.0
 shellingham==1.5.4
 sympy==1.14.0
 tokenizers==0.23.3
-torch==2.13.0+cu130
 torchao==0.18.0
 tqdm==4.70.1
 transformers==5.17.0

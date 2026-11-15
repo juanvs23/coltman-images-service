@@ -24,13 +24,15 @@ dist/
 *.egg-info/
 
 # Virtualenvs
-# The production runtime lives outside this project — never create one here.
+# The project owns its interpreter; it lives inside the tree and is never committed.
 .venv/
 venv/
 
-# Model assets — read-only inputs, never committed
+# Model assets — inputs, never committed
 model/assets/
 *.safetensors
+*.pth
+*.gguf
 
 # Server state
 run/
