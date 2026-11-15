@@ -1,0 +1,48 @@
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Caches
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Virtualenvs
+# The production runtime lives outside this project — never create one here.
+.venv/
+venv/
+
+# Model assets — read-only inputs, never committed
+model/assets/
+*.safetensors
+
+# Server state
+run/
+
+# Test evidence — run products are never committed; the READMEs beside them are
+tests/**/evidence/**
+!tests/**/evidence/**/
+!tests/**/evidence/**/README.md
+
+# Default output
+out/
+
+# Logs
+*.log
+logs/

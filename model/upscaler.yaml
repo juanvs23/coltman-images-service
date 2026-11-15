@@ -1,0 +1,15 @@
+id: realesrgan-x2plus
+
+weights: model/assets/upscaler/realesrgan_x2plus.pth
+
+# scale 2 is the published pixel-unshuffle arrangement: the input is folded by 2
+# into 12 channels, the trunk still produces x4 relative to its own input, and
+# the output is folded back by 1/2. At scale 4 nothing is folded and conv_first
+# takes three channels. Swapping to the x4 file is this line and the path above:
+# both files carry the same 702 key names and differ in exactly one shape.
+scale: 2
+
+architecture:
+  num_feat: 64
+  num_block: 23
+  num_grow_ch: 32

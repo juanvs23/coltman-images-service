@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""coltman-images — the CLI: `start`, `generate` and `stop`.
+
+The CLI is a client of the HTTP API and contains no rendering, no model and no
+torch (protocol section 5: two doors, one implementation). It reads
+`run/server.json`, talks to `127.0.0.1`, and maps what it finds onto the exit
+codes of section 5.4.
+
+All three commands are built: `start` and `stop` own the process, and `generate`
+POSTs one request and prints what came back — rendering stays in the server.
+
+Standard library only, so it runs under any interpreter on this machine; the
+*server* it launches always runs under the project's own `.venv/bin/python`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+BIND = "127.0.0.1"
+DEFAULT_PORT = 8420
+RUN_DIR = ROOT / "run"
+STATE_FILE = RUN_DIR / "server.json"
+LOG_FILE = RUN_DIR / "server.log"
+PYTHON = ROOT / ".venv" / "bin" / "python"
+MODULE = "coltman_images.server"
+
+EXIT_OK = 0
+EXIT_RENDER_FAILED = 1
+EXIT_INVALID_REQUEST = 2
+EXIT_ASSET_MISSING = 3
+EXIT_SERVER_UNAVAILABLE = 4
+
+START_TIMEOUT_S = 300.0
+"""Generous on purpose: a cold start reads 6.29 GB before the port binds."""
+
+STOP_GRACE_S = 30.0
+"""Protocol section 6: `stop` waits this long for in-flight work."""
+
+HEALTH_TIMEOUT_S = 2.0
+
+
+def _note(message: str) -> None:
+    print(f"coltman-images: {message}", file=sys.stderr)
+
+
+def _read_state() -> dict | None:
+    """The state file, or None. A malformed file is reported as stale."""
+    try:
+        raw = STATE_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _note(f"state file {STATE_FILE} is unreadable: {exc}")
+        return None
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError:
+        _note(f"state file {STATE_FILE} is not valid JSON")
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _health(port: int) -> dict | None:
+    """The `/health` body, or None when the port does not answer."""
+    url = f"http://{BIND}:{port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=HEALTH_TIMEOUT_S) as response:
+            if response.status != 200:
+                return None
+            body = json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _post(port: int, path: str, payload: dict | None = None, timeout: float = 10.0) -> tuple[int, dict]:
+    """POST and return (status, body). Raises URLError when the port is silent."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else b""
+    request = urllib.request.Request(
+        f"http://{BIND}:{port}{path}",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        status = exc.code
+    try:
+        body = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        body = {}
+    return status, body if isinstance(body, dict) else {}
+
+
+def _our_server(pid: object) -> bool:
+    """Is `pid` a live `coltman_images.server` process? The only signal we may send."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        cmdline = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return MODULE.encode() in cmdline
+
+
+def _pid_alive(pid: object) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _drop_state() -> None:
+    try:
+        STATE_FILE.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _note(f"could not remove {STATE_FILE}: {exc}")
+
+
+def _tail_log(lines: int = 20) -> str:
+    try:
+        text = LOG_FILE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    tail = text.splitlines()[-lines:]
+    return "\n".join(tail)
+
+
+# --- start ------------------------------------------------------------------
+
+
+def _report_running(state: dict, health: dict, requested_port: int | None) -> int:
+    pid = health.get("pid", state.get("pid"))
+    port = health.get("port", state.get("port"))
+    if requested_port is not None and requested_port != port:
+        _note(
+            f"--port {requested_port} ignored: the running server is on {port} "
+            "(one server serves this project; stop it first to change the port)"
+        )
+    print(f"coltman-images: already running — pid {pid}, port {port}, state {health.get('status')}")
+    return EXIT_OK
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    state = _read_state()
+
+    if state is not None:
+        port = state.get("port", DEFAULT_PORT)
+        health = _health(port) if isinstance(port, int) else None
+        if health is not None and health.get("status") == "warm":
+            return _report_running(state, health, args.port)
+
+        pid = state.get("pid")
+        if _our_server(pid):
+            # The pid is ours and the port is silent: the state file is written
+            # before the port binds, so this server is still warming up — or it
+            # is stuck. Either way this command does not start a second one.
+            _note(
+                f"pid {pid} is a coltman-images server that is not answering on port {port} yet "
+                "(still warming up?). Nothing was started. Stop it with `coltman-images stop` "
+                "or retry `coltman-images start` in a moment."
+            )
+            return EXIT_SERVER_UNAVAILABLE
+
+        # Provably stale: the pid is gone or belongs to something else. Diagnose,
+        # clear it, and let the operator start again — nothing here starts a
+        # server behind a stale state file (protocol section 6).
+        _drop_state()
+        why = "is not running" if not _pid_alive(pid) else "is not a coltman-images server"
+        _note(
+            f"stale state file: pid {pid} {why} and port {port} does not answer. "
+            f"Removed {STATE_FILE}. The server is not running — run `coltman-images start` again."
+        )
+        return EXIT_SERVER_UNAVAILABLE
+
+    if not PYTHON.is_file():
+        _note(f"the project interpreter is missing: {PYTHON}")
+        return EXIT_ASSET_MISSING
+
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    port = DEFAULT_PORT if args.port is None else args.port
+    command = [str(PYTHON), "-u", "-m", MODULE, "--port", str(port)]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT)
+
+    log_handle = None
+    if args.foreground:
+        child = subprocess.Popen(command, cwd=str(ROOT), env=env)
+    else:
+        log_handle = LOG_FILE.open("ab")
+        child = subprocess.Popen(  # noqa: SIM115 — closed by the parent's exit
+            command,
+            cwd=str(ROOT),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=log_handle,
+            start_new_session=True,
+        )
+
+    deadline = time.monotonic() + START_TIMEOUT_S
+    health: dict | None = None
+    while time.monotonic() < deadline:
+        code = child.poll()
+        if code is not None:
+            if log_handle is not None:
+                log_handle.close()
+            tail = _tail_log()
+            if tail:
+                print(tail, file=sys.stderr)
+            _note(f"the server exited with code {code} before the port answered")
+            return EXIT_ASSET_MISSING if code == EXIT_ASSET_MISSING else EXIT_SERVER_UNAVAILABLE
+        health = _health(port)
+        if health is not None and health.get("status") == "warm":
+            break
+        time.sleep(0.5)
+
+    if health is None or health.get("status") != "warm":
+        _note(f"the server did not answer on {BIND}:{port} within {START_TIMEOUT_S:.0f} s")
+        if not args.foreground:
+            child.terminate()
+        return EXIT_SERVER_UNAVAILABLE
+
+    print(f"coltman-images: started — pid {health.get('pid')}, port {health.get('port')}, state {health.get('status')}")
+    if not args.foreground:
+        print(f"coltman-images: log {LOG_FILE}")
+        if log_handle is not None:
+            log_handle.close()
+        return EXIT_OK
+
+    # Foreground: the child stays attached. Wait for it, and let Ctrl-C reach
+    # both of us — the child handles SIGINT by draining and releasing.
+    try:
+        return child.wait()
+    except KeyboardInterrupt:
+        child.send_signal(signal.SIGINT)
+        return child.wait()
+
+
+# --- stop -------------------------------------------------------------------
+
+
+def cmd_stop(_args: argparse.Namespace) -> int:
+    state = _read_state()
+    if state is None:
+        print("coltman-images: not running")
+        return EXIT_OK
+
+    port = state.get("port", DEFAULT_PORT)
+    pid = state.get("pid")
+    health = _health(port) if isinstance(port, int) else None
+
+    if health is not None:
+        try:
+            status, _body = _post(port, "/shutdown")
+        except (urllib.error.URLError, OSError) as exc:
+            _note(f"shutdown request failed: {exc}")
+            status = None
+        if status not in (200, None):
+            _note(f"shutdown answered {status}; stopping anyway")
+    elif _our_server(pid):
+        # Alive but silent: the state file is written before the port binds, so
+        # this is a server that is still warming up (or stuck). A signal is the
+        # only way to reach it, and it is the server's own pid.
+        _note(f"pid {pid} is not answering on port {port}; sending SIGTERM")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as exc:
+            _note(f"SIGTERM failed: {exc}")
+    else:
+        _drop_state()
+        print("coltman-images: not running (stale state file removed)")
+        return EXIT_OK
+
+    deadline = time.monotonic() + STOP_GRACE_S
+    while time.monotonic() < deadline:
+        if _health(port) is None and not STATE_FILE.exists() and not _pid_alive(pid):
+            print("coltman-images: stopped")
+            return EXIT_OK
+        time.sleep(0.25)
+
+    # The server releases at its own 30 s deadline and exits; give it the moment
+    # it needs to unlink the state file, then report what is actually true.
+    time.sleep(0.5)
+    if _health(port) is not None:
+        _note(f"the server on port {port} is still answering after {STOP_GRACE_S:.0f} s")
+        return EXIT_SERVER_UNAVAILABLE
+    if STATE_FILE.exists():
+        if _pid_alive(pid):
+            _note(f"pid {pid} is still alive but the state file {STATE_FILE} remains")
+            return EXIT_SERVER_UNAVAILABLE
+        _drop_state()
+    print("coltman-images: stopped")
+    return EXIT_OK
+
+
+# --- entry point ------------------------------------------------------------
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    """POST one request to the running server and print what came back.
+
+    The CLI contains no rendering and no second implementation: it is the first
+    client of the API (protocol section 5). It never starts a server.
+    """
+    state = _read_state()
+    if state is None:
+        _note("the server is not running — run `coltman-images start` first")
+        return EXIT_SERVER_UNAVAILABLE
+    port = int(state.get("port") or DEFAULT_PORT)
+    if _health(port) is None:
+        _note(f"the server recorded on port {port} does not answer — run `coltman-images start`")
+        return EXIT_SERVER_UNAVAILABLE
+
+    payload: dict[str, object] = {"prompt": args.prompt}
+    if args.seed is not None:
+        payload["seed"] = args.seed
+    if args.width is not None:
+        payload["width"] = args.width
+    if args.height is not None:
+        payload["height"] = args.height
+    if args.out is not None:
+        payload["out"] = str(pathlib.Path(args.out).expanduser().resolve())
+    if args.upscale:
+        payload["upscale"] = True
+
+    # No client-side deadline: the protocol declares no per-request ceiling
+    # (section 6), so inventing one here would refuse work the server accepts.
+    try:
+        status, body = _post(port, "/generate", payload, timeout=None)
+    except urllib.error.URLError:
+        _note("the server stopped answering before the still was written")
+        return EXIT_SERVER_UNAVAILABLE
+
+    if status == 200:
+        if args.json:
+            json.dump(body, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        else:
+            sys.stdout.write(f"{body.get('out', '')}\n")
+        return EXIT_OK
+
+    error = body.get("error") or {}
+    message = error.get("message") or f"the server answered {status}"
+    _note(f"{error.get('code', 'error')}: {message}")
+    return EXIT_INVALID_REQUEST if status == 400 else EXIT_RENDER_FAILED
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="coltman-images",
+        description="coltman-images — the image generation service. Commands: start, generate, stop.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True, metavar="{start,generate,stop}")
+
+    start = commands.add_parser("start", help="start the server and wait until it is warm")
+    start.add_argument("--port", type=int, default=None, help=f"loopback port (default {DEFAULT_PORT})")
+    start.add_argument(
+        "--foreground",
+        action="store_true",
+        help="keep the server attached to this terminal instead of backgrounding it",
+    )
+    start.set_defaults(handler=cmd_start)
+
+    generate = commands.add_parser("generate", help="render one still through the running server")
+    generate.add_argument("--prompt", required=True, help="the text to render")
+    generate.add_argument("--seed", type=int, default=None, help="absent: the server picks one and returns it")
+    generate.add_argument("--width", type=int, default=None, help="absent: the entry's default")
+    generate.add_argument("--height", type=int, default=None, help="absent: the entry's default")
+    generate.add_argument("--out", default=None, help="absolute path; absent: the default folder out/")
+    generate.add_argument(
+        "--upscale",
+        action="store_true",
+        help="permit the declared stage to synthesize the pixels above the native ceiling",
+    )
+    generate.add_argument("--json", action="store_true", help="print the whole response object")
+    generate.set_defaults(handler=cmd_generate)
+
+    stop = commands.add_parser("stop", help="stop the server and release the card")
+    stop.set_defaults(handler=cmd_stop)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.handler(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
