@@ -47,7 +47,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 #    model/z_image.json is tracked (473 bytes) and pinned by digest in the entry.
 
 # 3. prove it
-.venv/bin/python -m unittest discover -s tests -v      # ~14 minutes
+.venv/bin/python -m unittest discover -s tests -v      # ten to fifteen minutes
 ```
 
 **Guard 4 is the proof that step 2 worked.** The loader counts the parameter
@@ -148,6 +148,10 @@ with both sides on the 16 grid is 1152×864, 73,728 px over `max_pixels`, so it
 stops one step lower — which is the reason the page offers a list of shapes rather
 than two free width/height fields, where you could ask for a size the card refuses.
 
+Every control also says what it does: one line under it, and a collapsed **what
+each control does** guide at the foot of the form with the detail — including the
+ten boxes this entry and its stage produce for the five shapes, all computed.
+
 It is a third door onto the same implementation, not a second renderer: it calls
 the same `submit()` the API calls, so two tabs serialise instead of loading two
 models.
@@ -226,7 +230,7 @@ Full table and the exact mapping: `docs/protocol.md` §5.4.
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-One test per guard, and guard 4 is written as two: about fourteen minutes, a dozen
+One test per guard, and guard 4 is written as two: ten to fifteen minutes, a dozen
 stills. They prove request validation, the lifecycle and its idempotent edges,
 that the warm-up is real, the census, determinism, the default folder, CLI/API
 parity, self-containment, single-flight, the upscale stage, one instance per

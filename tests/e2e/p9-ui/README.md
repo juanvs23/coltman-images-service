@@ -9,7 +9,7 @@ card, and the numbers below are what the installed system did.
 - **Verdict:** pass on every criterion that can be observed without a browser.
   Two things were not observed and are named below: no browser ever rendered this
   page, and the 50/50 layout is proved as a component tree rather than as pixels.
-  The suite is green — `Ran 17 tests in 818.698 s`, `OK` — and guard 13
+  The suite is green — `Ran 17 tests in 677.008 s`, `OK` — and guard 13
   repeats the structural, unit and single-flight halves inside the matrix.
 
 ## What it proves
@@ -28,7 +28,16 @@ card, and the numbers below are what the installed system did.
    records the controls' configuration: the steps slider at the entry's
    `8..16` defaulting to `12`, and the aspect radio offering exactly
    `16:9, 1:1, 4:3, 3:4, 9:16` with `16:9` selected.
-3. **Every size is computed, and none is carried.** Guard 13 asserts all ten
+3. **The page explains itself.** Each control carries one line under it — the
+   prompt, the seed, the size switch, the aspect and the slider — and a collapsed
+   guide titled **"what each control does"** sits at the foot of the form. The
+   *served* page carries it, not just the source: `GET /config` from the running
+   page returns the accordion `('what each control does', False)`, five `info`
+   lines, and guide text containing the interpolated ladder (`8 to 16, defaulting
+   to 12`) and the ten boxes (`served-config.json`, `served-config.txt`). Every
+   number in that copy is computed at build time; the module's literal set is
+   unchanged at `[0, 0.5, 1, 2, 16, 256, 320, 540]`.
+4. **Every size is computed, and none is carried.** Guard 13 asserts all ten
    from the entry's ceiling and the stage's factor, as properties and as exact
    numbers. Against the operator's table, **six match and four differ**, and the
    four are larger:
@@ -48,20 +57,20 @@ card, and the numbers below are what the installed system did.
    force the area. The table's two 4:3/3:4 rows are legal boxes but not the
    largest, which is the rule the request states; if the operator wants the
    smaller boxes, that is a different rule and a second ruling.
-4. **The baseline did not move.** `16:9` at SD is `1280×720` on this entry — the
+5. **The baseline did not move.** `16:9` at SD is `1280×720` on this entry — the
    box its own defaults declare — and `POST /generate` at 512×512 for
    `a lighthouse at dusk`, seed 7 still answers
    `sha256 0065c34af014499e6c959ca60d59f681647595538c7edf6f832136a29f6d7a72`,
    258,609 bytes (`baseline-no-steps.png`). The page's 16:9 SD still is
    `sha256 ff3b84a08e48e1b0…`, 848,663 bytes, the project's own 1280×720 baseline
    — so adding a control changed neither number.
-5. **The two shapes that are not the entry's own, through the page.** `1:1` at SD
+6. **The two shapes that are not the entry's own, through the page.** `1:1` at SD
    delivered **960×960**, 857,457 bytes, `sha256 40e21a01c7e66e01…` in 51.42 s of
    status updates (`render_s 45.246`, `load_s 5.700`, `duration_s 51.351`); `1:1`
    at HD delivered **1920×1920 from a 960×960 render**, 3,184,668 bytes,
    `sha256 df11752ec1741b97…`, stage 3.428 s, in 89.15 s — of which
    `load_s 39.886` is a page-cache eviction of the checkpoint, not the stage.
-6. **The screen states SD or HD, the base, the census and the three timings.**
+7. **The screen states SD or HD, the base, the census and the three timings.**
    Verbatim from the page (`sd-16-9-steps12-transcript.json`,
    `1-1-hd-transcript.json`):
 
@@ -82,34 +91,34 @@ card, and the numbers below are what the installed system did.
    The census is rendered key by key from the response, and it is the render's,
    not the stage's. `render_s`, `load_s` and `duration_s` are three separate
    lines: the last is the only one that carries load and queue wait.
-7. **The step control is the entry's ladder, and its default is an absence.**
+8. **The step control is the entry's ladder, and its default is an absence.**
    At the slider's initial position the request carries no `steps` at all and the
    panel states `steps 12` (the entry's default, from the response); moved to 16,
    the same page produced `786d8b5142995431…` with `render_s 60.249` against
    `45.347` and its panel stated `steps 16`. At the API, the same request with no
    `steps` field and with `steps: 12` explicitly is the same 512×512 bytes.
-8. **The queue depth is on screen while it waits.** Two submissions fired at once
+9. **The queue depth is on screen while it waits.** Two submissions fired at once
    through the page rendered in 49.40 s and 98.80 s, the second naming
    `in flight — queue depth 1` while it waited. The page has no queue of its own:
    it reaches `submit()` immediately and waits where the depth is visible.
-9. **Two concurrent submissions serialise.** Guard 13 fires both through the
+10. **Two concurrent submissions serialise.** Guard 13 fires both through the
    page's own client (gradio's, the endpoint the button calls) — `16:9` at the
    entry's steps and `1:1` at its ceiling — and measured a wall ratio of
    **2.311** (48.894 s against 113.018 s, separator 1.5), both showing their first status
    within **0.1 s** of the click (the guard allows 10 s), and the queue never held
    more than one waiting request over 225 samples.
-10. **The page shares the process's life.** `stop` exited 0; both ports then
+11. **The page shares the process's life.** `stop` exited 0; both ports then
     refused connections (`000` from `curl`), `run/server.json` was gone and no
     `coltman_images.server` process remained.
-11. **A differing `--ui-port` on a running server is reported and ignored** —
+12. **A differing `--ui-port` on a running server is reported and ignored** —
     exit 0, with the reason on stderr. `--ui-port` equal to `--port` is refused:
     exit 2, before the mutex, in 1.6 s — no boot, no weight.
-12. **A server without `--ui` imports no gradio**, and the whole matrix — started
+13. **A server without `--ui` imports no gradio**, and the whole matrix — started
     without the flag — is green.
-13. **`--ui` with gradio absent is exit 3 before any work** (simulated by
+14. **`--ui` with gradio absent is exit 3 before any work** (simulated by
     shadowing the module for one process: the server named what was missing, wrote
     no state file, read no weight).
-14. **The page telephones nothing.** A `--ui` boot's own log contains **no
+15. **The page telephones nothing.** A `--ui` boot's own log contains **no
     `https://` line at all** while it does contain gradio's calls to its own port
     (`analytics-after.txt`, `boot.log`). `analytics-before.log` keeps three of the
     telemetry lines the pre-fix mounts wrote; `analytics-override.txt` and
@@ -264,7 +273,8 @@ into `evidence/`.
 | `analytics-after.txt` | the two counts taken over `boot.log` — 0 external, 3 to its own port |
 | `analytics-before.log` | three of the telemetry lines the pre-fix mounts wrote, with their timestamps |
 | `analytics-override.txt`, `boot-shell-override.log` | the same boot with `GRADIO_ANALYTICS_ENABLED=True` and a foreign `GRADIO_TEMP_DIR` exported: 0 `https://` lines, cache still under `run/ui/` |
-| `layout-tree.json` | the page's component tree: one row, two `scale=1` columns, the steps slider's entry-derived range and the aspect radio's five in order |
+| `layout-tree.json` | the page's component tree: one row, two `scale=1` columns, the steps slider's entry-derived range, the aspect radio's five in order, the guide's title and closed state, and every control's `info` line |
+| `served-config.json`, `served-config.txt` | what the running page sends a browser: the accordion closed, five info lines, and guide text with the computed ladder and boxes |
 | `page.html`, `page.headers` | the page as served: 200, `text/html`, 22,179 bytes |
 | `health.json` | `/health` while the page was up |
 | `sd-16-9-steps12-transcript.json` | the entry's own shape at the slider's initial position: every status, then the panel |

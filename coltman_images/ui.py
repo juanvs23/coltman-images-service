@@ -27,7 +27,7 @@ the builder must not restate it:
    validation, no request shaping, no knowledge of a model. The adapter's census
    keys are never written here; they are rendered as the response declares them,
    because protocol section 6.1 makes the adapter the owner of what a census key
-   means and the next model has no FP8 at all.
+   means — and a second model may declare keys this page has never heard of.
 
 Gradio is the first rendering of this, behind that seam: replacing it is
 replacing `build` and nothing else (protocol section 5.5).
@@ -247,6 +247,81 @@ def build(app: Any) -> gr.Blocks:
     entry = app.entry
     if entry is None:
         raise RuntimeError("build: the page needs the resolved entry, and none is loaded")
+    declaration = app.declaration
+    if declaration is None:
+        raise RuntimeError("build: the page needs the stage's declaration, and none is loaded")
+    factor = int(declaration.scale)
+
+    def _guide() -> str:
+        """What each control does, with every number computed from the entry.
+
+        Presentation only: the ladder comes from `entry.steps_min`/`steps_max`/
+        `steps`, the boxes from `size_for`, and the ceiling and the stage from the
+        entry and the declaration. A number written here would be a number the
+        next entry inherits wrongly, so there is none — the strings are templates
+        and guard 13 scans them for the entry's sizes.
+        """
+        boxes = {shape: (size_for(entry, shape, 1), size_for(entry, shape, factor)) for shape in ASPECT_PRESETS}
+        ceiling = int(entry.max_pixels)
+        exact = [shape for shape in ASPECT_PRESETS if boxes[shape][0][0] * boxes[shape][0][1] == ceiling]
+        short = [shape for shape in ASPECT_PRESETS if shape not in exact]
+        if short:
+            verb = "stops" if len(short) == 1 else "stop"
+            short_sentence = (
+                f"On this entry the ceiling is reached exactly by {', '.join(exact) or 'no shape'}; "
+                f"{', '.join(short)} {verb} short."
+            )
+        else:
+            short_sentence = "On this entry every shape reaches the ceiling exactly."
+        table = "\n".join(
+            f"| `{shape}` | {boxes[shape][0][0]}×{boxes[shape][0][1]} "
+            f"| {boxes[shape][1][0]}×{boxes[shape][1][1]} |"
+            for shape in ASPECT_PRESETS
+        )
+        default_width = int(entry.defaults["width"])
+        default_height = int(entry.defaults["height"])
+        return "\n\n".join(
+            [
+                "**prompt** — The encoder is the pipeline's own prompt encoder, not a language "
+                "model bolted on. Measured on this deployment on 2026-11-16: the same "
+                "description that kept `blue skin` in English lost it in Spanish at the same "
+                "seed, so keep the attributes that matter in English — or the whole prompt.",
+                "**seed** — A render does not start from an empty canvas — it starts from noise. "
+                "The seed chooses which noise. **Same seed and the same everything else gives "
+                "byte-identical files**; a different seed gives a different composition, not a "
+                "better one. The seed alone does not reproduce a still: the prompt, the steps, "
+                "the shape and the model must match too. No number is better than another; when "
+                "one gives you something you like, keep it.",
+                "**steps** — Each step is one pass of the model over the noise. Cost is linear — "
+                f"measured on this deployment at 3.9 s per step at {default_width}×{default_height}, "
+                "the box this entry renders by default — and the curve turns, measured here: below the entry's range the "
+                "scene is not settled, above it the stills differ but do not improve. The range "
+                f"and the default are the entry's, not the page's: {entry.steps_min} to "
+                f"{entry.steps_max}, defaulting to {entry.steps}.",
+                "**size** — **SD** is the native render: exactly the pixels the model produced. "
+                "**HD** delivers a larger still by enlarging a base render with the declared "
+                "stage — those pixels are synthesized, not rendered, and the panel names the base "
+                "it started from so the two cannot be confused. HD only runs when the size is "
+                "above the ceiling and only because you asked for it. On this entry the ceiling "
+                f"is {entry.max_pixels} px and the stage is ×{factor}.",
+                "**aspect** — Each shape's size is the largest box at that proportion whose sides "
+                "stay on the 16-pixel grid and whose area fits the entry's ceiling — and for HD, "
+                "the stage's reach. So a shape can never ask for something the card would refuse. "
+                f"{short_sentence} On the grid, the next size up for a shape that stops short "
+                "would overshoot, so the page shrinks to the largest that fits and the panel tells "
+                "you what you got.\n\n"
+                "| shape | SD | HD |\n| --- | --- | --- |\n" + table,
+                "**the panel** — Every number on the result comes from the response, never from "
+                "the page: the size delivered, the base the stage started from, the census the "
+                "loader measured — key by key, whatever that model declares — and `render_s`, "
+                "`load_s` and `duration_s` kept apart, because the last one is the only one that "
+                "shows queue wait and load.",
+                "**the status line** — While a request runs, the line quotes the server's queue "
+                "depth. It is quoted and never interpreted: a depth cannot say whether the "
+                "request ahead is waiting or already on the card. A quiet page and a hung page "
+                "must not look the same.",
+            ]
+        )
 
     def _describe(response: dict[str, Any]) -> str:
         """The honest copy, from the response and never from a constant."""
@@ -307,19 +382,26 @@ def build(app: Any) -> gr.Blocks:
                     label="prompt",
                     lines=2,
                     placeholder="what to render",
+                    info="what to render — English gets the most out of the encoder",
                 )
                 with gr.Row():
-                    seed = gr.Number(label="seed", precision=0, value=None)
+                    seed = gr.Number(
+                        label="seed",
+                        precision=0,
+                        value=None,
+                        info="the starting noise; empty lets the server pick one and report it",
+                    )
                     quality = gr.Radio(
                         choices=[SD_LABEL, HD_LABEL],
                         value=SD_LABEL,
                         label="size",
+                        info="SD renders; HD asks the stage to synthesize the pixels above the native ceiling",
                     )
                 aspect = gr.Radio(
                     choices=list(ASPECT_PRESETS),
                     value=ASPECT_PRESETS[0],
                     label="aspect",
-                    info="the largest box at that shape, from the entry's ceiling",
+                    info="the shape; every size is computed to fit",
                 )
                 steps = gr.Slider(
                     minimum=int(entry.steps_min),
@@ -330,10 +412,14 @@ def build(app: Any) -> gr.Blocks:
                     label="steps",
                     info=(
                         f"the entry's range, {entry.steps_min}–{entry.steps_max}; "
-                        f"its default is {entry.steps}"
+                        f"its default is {entry.steps}. How many denoising passes — time grows "
+                        "linearly with it, and past the entry's ceiling more steps buy variation, "
+                        "not definition."
                     ),
                 )
                 submit = gr.Button("generate", variant="primary")
+                with gr.Accordion("what each control does", open=False):
+                    gr.Markdown(_guide())
             with gr.Column(scale=1, min_width=320):
                 status = gr.Markdown("idle")
                 still = gr.Image(label="still", type="filepath", height=540)

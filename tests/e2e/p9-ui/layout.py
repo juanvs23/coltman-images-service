@@ -93,6 +93,35 @@ def main() -> int:
             )
             for key in ("choices", "value", "label")
         },
+        "guide": {
+            "present": any(component["type"] == "accordion" for component in page.config["components"]),
+            **{
+                key: next(
+                    (
+                        component["props"].get(key)
+                        for component in page.config["components"]
+                        if component["type"] == "accordion"
+                    ),
+                    None,
+                )
+                for key in ("label", "open")
+            },
+            # The body, so the copy itself is an artifact and not a claim: the
+            # markdown the accordion holds, exactly as the page renders it.
+            "body": next(
+                (
+                    component["props"].get("value")
+                    for component in components.values()
+                    if component["type"] == "markdown" and "**prompt**" in (component["props"].get("value") or "")
+                ),
+                None,
+            ),
+        },
+        "info": {
+            component["props"].get("label"): component["props"].get("info")
+            for component in page.config["components"]
+            if component["props"].get("info")
+        },
     }
     print(json.dumps(tree, indent=2))
 
@@ -108,6 +137,30 @@ def main() -> int:
         problems.append(f"the aspect control offers {shapes}, not the operator's five")
     if tree["aspect"]["value"] != "16:9":
         problems.append(f"the aspect control starts at {tree['aspect']['value']!r}, not 16:9")
+    guide = tree["guide"]
+    if not guide["present"]:
+        problems.append("the page carries no guide: there is no accordion in the tree")
+    elif guide["label"] != "what each control does":
+        problems.append(f"the guide is titled {guide['label']!r}, not 'what each control does'")
+    elif guide["open"] is not False:
+        problems.append(f"the guide is open by default ({guide['open']!r}); it must be collapsed")
+    body = guide.get("body") or ""
+    for marker in ("**prompt**", "**seed**", "**steps**", "**size**", "**aspect**", "**the panel**", "**the status line**"):
+        if marker not in body:
+            problems.append(f"the guide does not explain {marker.strip(chr(42))}: {body[:120]!r}")
+    # The copy must carry no model identity: on a second model it would be false.
+    for name in ("Qwen", "CLIP", "4B", "Z-Image", "zimage", "ZImage", "FP8", "float8"):
+        if name in body:
+            problems.append(f"the guide names a model ({name}); it must describe the deployment, not the model")
+    if "accordion" not in leaves["controls"]:
+        problems.append(f"the guide is not in the controls column: {leaves['controls']}")
+    unlabelled = sorted(
+        label
+        for label in ("prompt", "seed", "size", "aspect", "steps")
+        if not tree["info"].get(label)
+    )
+    if unlabelled:
+        problems.append(f"these controls say nothing about themselves: {unlabelled}")
     slider = tree["steps"]
     if (slider["minimum"], slider["maximum"], slider["value"]) != (
         entry.steps_min,
