@@ -1,6 +1,6 @@
 # Protocol
 
-The law of `coltman-images`. Every other document defers to this one. Where this document and any other document disagree, this document wins. Every code artifact named here is declared, not built.
+The law of `coltman-images`. Every other document defers to this one. Where this document and any other document disagree, this document wins.
 
 ## 1. What this system is
 
@@ -43,11 +43,11 @@ A test enforces this by refusing any path outside its own tree (guard 8 in secti
 | `model/upscaler.yaml` | the upscale stage — its own declaration, because it serves every entry | present |
 | `requirements.txt` | the pinned dependency set the venv is built from | present |
 | `.venv/` | the project's own interpreter and dependencies, gitignored | present |
-| `bin/coltman-images` | CLI entry point | declared, not built |
+| `bin/coltman-images` | CLI entry point | present |
 | `coltman_images/` | the package — `entry.py` resolves the entry, `adapter.py` is the model contract and registry, `render.py` is the model-agnostic core (plan, output, seed, stage), `server.py` is the process, `upscale.py` is the declared stage; `loader.py`, `fp8.py` and `adapters/zimage.py` are Z-Image's | built through P6; the guard matrix is green |
-| `run/` | server state, gitignored | declared, not built |
-| `out/` | default output folder, gitignored | declared, not built |
-| `tests/` | the test matrix | declared, not built |
+| `run/` | server state, gitignored | present when a server runs |
+| `out/` | default output folder, gitignored | present |
+| `tests/` | the test matrix | thirteen tests, green in 416 s |
 
 ## 4. Vocabulary
 

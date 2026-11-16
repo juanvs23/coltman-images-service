@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`coltman-images` is an independent, self-owned image generation service. It turns a generation request into a still and owns its whole lifecycle: power on and warm up, serve generations, shut down. It carries its own connection layer for applications — a loopback HTTP API an application integrates against, with the CLI as its first client — and exposes three commands: `coltman-images start`, `coltman-images generate`, `coltman-images stop`. It is named for the service, not for a model: the core is model-agnostic, and Z-Image is one adapter behind it. The model is an asset its own entry declares and uses; it is not the model's owner. It runs with no other project present. The model assets, the entry, the render core, the Z-Image adapter, the upscale stage, the server and the CLI are all in place, and the eleven guards that prove them are executable.
+`coltman-images` is an independent, self-owned image generation service. It turns a generation request into a still and owns its whole lifecycle: power on and warm up, serve generations, shut down. It carries its own connection layer for applications — a loopback HTTP API an application integrates against, with the CLI as its first client — and exposes three commands: `coltman-images start`, `coltman-images generate`, `coltman-images stop`. It is named for the service, not for a model: the core is model-agnostic, and Z-Image is one adapter behind it. The model is an asset its own entry declares and uses; it is not the model's owner. It runs with no other project present. The model assets, the entry, the render core, the Z-Image adapter, the upscale stage, the server and the CLI are all in place, and the twelve guards that prove them are executable.
 
 ## Structure
 

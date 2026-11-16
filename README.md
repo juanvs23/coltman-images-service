@@ -146,7 +146,7 @@ oversight: a client either runs in the same origin or proxies.
 
 Full table and the exact mapping: `docs/protocol.md` §5.4.
 
-## The eleven guards
+## The twelve guards
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
