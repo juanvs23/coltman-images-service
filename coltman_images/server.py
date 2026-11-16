@@ -110,6 +110,14 @@ class ServerError(Exception):
     """The server cannot come up: the port could not be claimed, or it broke."""
 
 
+class InvalidRequest(Exception):
+    """The request was refused before any GPU work (HTTP 400, CLI exit 2)."""
+
+
+class RenderFailed(Exception):
+    """The server accepted the request and the render raised (HTTP 500)."""
+
+
 def _utc_now() -> str:
     """A UTC timestamp, ISO 8601 in seconds — the shape every state field uses."""
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -366,6 +374,90 @@ class WarmServer:
     def depth(self) -> int:
         """Requests waiting for the worker. One in flight is not waiting."""
         return self._queue.qsize()
+
+    # --- the submission seam (roadmap B1) -----------------------------------
+
+    def submit(self, request: dict[str, Any]) -> dict[str, Any]:
+        """One request in, one response out. **The only path to a still.**
+
+        `POST /generate` calls this and the web UI will call this; neither may
+        reach the adapter or the queue any other way, or a second caller is a
+        second renderer outside the single-flight queue. That is the whole
+        reason this function exists (roadmap B1): the handler used to validate,
+        plan, enqueue and wait inline, which made every future caller a copy of
+        that code and a second producer on one card.
+
+        Returns the protocol section 4.2 response object. Raises:
+
+        - `InvalidRequest` — refused before any GPU work, so the handler can
+          answer 400 without asking whether a model was touched.
+        - `ServerError` — the server is stopping and accepted nothing.
+        - `RenderFailed` — accepted, then the render raised (500).
+
+        There is no timeout: the queue never refuses and there is no
+        per-request ceiling, so `stop` is the only abort (section 6).
+        """
+        entry = self.entry
+        if entry is None:
+            raise ServerError("no entry is loaded")
+
+        # Everything that can refuse without touching the card refuses here,
+        # before the queue, so a malformed request never reaches the worker and
+        # therefore never reaches the GPU (guard 1).
+        problems = entry.accepts(request)
+        if problems:
+            raise InvalidRequest("; ".join(problems))
+
+        prompt = request["prompt"]
+        width, height = entry.dims(request.get("width"), request.get("height"))
+        try:
+            # `_plan` owns the ceiling and the stage's permission: it refuses a
+            # size this card cannot render, and above the native ceiling it
+            # refuses a request that did not permit the synthesis. Both are
+            # validation, so both land as 400 rather than mid-render.
+            render_module._plan(
+                entry, prompt, width, height, bool(request.get("upscale", False))
+            )
+        except ValueError as exc:
+            raise InvalidRequest(str(exc).removeprefix("invalid request: ")) from None
+
+        seed = render_module._seed_or_pick(request.get("seed"))
+        accepted_at = time.perf_counter()
+
+        job = _Job(
+            accepted_at=accepted_at,
+            prompt=prompt,
+            seed=seed,
+            width=width,
+            height=height,
+            steps=request.get("steps"),
+            upscale=bool(request.get("upscale", False)),
+            out=request.get("out"),
+        )
+        self._enqueue(job)
+        job.done.wait()
+
+        if job.error is not None:
+            raise RenderFailed(f"{type(job.error).__name__}: {job.error}")
+        assert job.result is not None
+
+        # The declared order of protocol section 4.2, with `duration_s` added and
+        # the load split kept last: it is the one field this server reports that
+        # `render.render` also reports, and it is where the per-request swap cost
+        # is visible.
+        return {
+            "out": job.result["out"],
+            "steps": job.result["steps"],
+            "seed": job.result["seed"],
+            "width": job.result["width"],
+            "height": job.result["height"],
+            "model": job.result["model"],
+            "census": job.result["census"],
+            "duration_s": round(time.perf_counter() - accepted_at, 3),
+            "render_s": job.result["render_s"],
+            "upscale": job.result["upscale"],
+            "load_s": job.result["load_s"],
+        }
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -647,85 +739,28 @@ class _Handler(BaseHTTPRequestHandler):
         return request
 
     def _generate(self) -> None:
-        app = self.app
-        entry = app.entry
-        assert entry is not None
+        """`POST /generate`: parse the body, call the seam, map the outcome.
 
-        # Everything that can refuse without touching the card is refused here,
-        # before the queue: a malformed request never reaches the worker and
-        # therefore never reaches the GPU (guard 1).
+        The handler owns HTTP and nothing else. What a request *means* lives in
+        `WarmServer.submit()`, which is the one path to a still (roadmap B1), so
+        the web UI will share it instead of restating the pipeline.
+        """
         try:
             request = self._body()
         except ValueError as exc:
             self._fail(400, "invalid_request", str(exc))
             return
 
-        problems = entry.accepts(request)
-        if problems:
-            self._fail(400, "invalid_request", "; ".join(problems))
-            return
-
-        prompt = request["prompt"]
-        width, height = entry.dims(request.get("width"), request.get("height"))
         try:
-            # `_plan` owns the ceiling and the stage's permission: it refuses a
-            # size this card cannot render, and above the native ceiling it
-            # refuses a request that did not permit the synthesis. Both are
-            # validation, so both land here as 400 rather than mid-render.
-            render_module._plan(
-                entry, prompt, width, height, bool(request.get("upscale", False))
-            )
-        except ValueError as exc:
-            self._fail(400, "invalid_request", str(exc).removeprefix("invalid request: "))
+            response = self.app.submit(request)
+        except InvalidRequest as exc:
+            self._fail(400, "invalid_request", str(exc))
             return
-
-        seed = render_module._seed_or_pick(request.get("seed"))
-        accepted_at = time.perf_counter()
-
-        job = _Job(
-            accepted_at=accepted_at,
-            prompt=prompt,
-            seed=seed,
-            width=width,
-            height=height,
-            steps=request.get("steps"),
-            upscale=bool(request.get("upscale", False)),
-            out=request.get("out"),
-        )
-        try:
-            app._enqueue(job)
-        except ServerError as exc:
+        except (RenderFailed, ServerError) as exc:
             self._fail(500, "render_failed", str(exc))
             return
 
-        # No timeout: the queue never refuses and there is no per-request
-        # ceiling. `stop` is the only abort (protocol section 6).
-        job.done.wait()
-
-        if job.error is not None:
-            self._fail(500, "render_failed", f"{type(job.error).__name__}: {job.error}")
-            return
-        assert job.result is not None
-        # The declared order of protocol section 4.2, with `duration_s` added and
-        # the load split kept last: it is the one field this server reports that
-        # `render.render` also reports, and it is where the per-request swap cost
-        # is visible.
-        self._respond(
-            200,
-            {
-                "out": job.result["out"],
-                "steps": job.result["steps"],
-                "seed": job.result["seed"],
-                "width": job.result["width"],
-                "height": job.result["height"],
-                "model": job.result["model"],
-                "census": job.result["census"],
-                "duration_s": round(time.perf_counter() - accepted_at, 3),
-                "render_s": job.result["render_s"],
-                "upscale": job.result["upscale"],
-                "load_s": job.result["load_s"],
-            },
-        )
+        self._respond(200, response)
 
 
 LOCK_FILE = RUN_DIR / "server.lock"

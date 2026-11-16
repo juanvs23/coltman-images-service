@@ -342,6 +342,7 @@ Six steps, each built and exercised alone before the next begins.
 5. No prompt, channel or style logic lives here.
 6. The tests live with the system.
 7. Every component takes the resolved entry. No module reads a fixed path, and no steps, guidance or census value is hardcoded: they are the entry's data.
+8. **One producer.** A still is reached through `WarmServer.submit(request)` and nowhere else: the HTTP handler parses the body and calls it, and the web UI (P9) will call it too. No module enqueues work of its own. There is one queue and one place where a second renderer could appear, and this rule is what keeps it at one.
 
 ## 10. The test matrix
 
