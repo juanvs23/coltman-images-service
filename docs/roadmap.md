@@ -4,9 +4,25 @@
 
 **P9 — the web UI, inside this project.** P8 closed on 2026-11-15: `flock` on `run/server.lock` is taken before the entry is resolved, the `/proc` scan catches a server launched outside the CLI, and guard 12 proves that a deleted state file cannot buy a second instance. The suite is green.
 
-The UI is declared in eight steps below. It is the first work in this project that is not a service primitive, and it is the first that adds a dependency tree — 53 packages — to a venv that has been deliberately bare.
+The UI is declared in eight steps below. It is the first work in this project that is not a service primitive, and it is the first that adds a dependency tree — 53 packages — to a venv that has been deliberately bare. **It cannot start until B1 and B2 are cleared**, and neither can P10 until B3 is.
 
 No phase may start before the previous one has an **observed** exit: a command whose output is the proof. A document is not an exit criterion.
+
+## Blockers
+
+A blocker is a prerequisite that lives outside a phase and stops it at its first
+step. They go **first, in this order**, and a phase whose blockers are open does
+not start: P9 cannot be built while B1 and B2 are open, P10 cannot be built while
+B3 is open, and U3 cannot be coded while B4 is open. Clearing a blocker is
+finished when its exit criterion is an observed command, the same rule the phases
+follow.
+
+| # | Blocker | Blocks | What it needs | Exit criterion |
+| --- | --- | --- | --- | --- |
+| **B1** | **The submission seam.** One function on the warm server, `submit(request) -> response`, that `POST /generate` calls. It does not exist: the handler validates, plans, enqueues and waits inline, so P9's step 2 named a seam that was never built. | P9 | An extraction, not a design — the validation, the plan, the enqueue and the wait move behind one callable on `WarmServer`. | `POST /generate` calls `submit()`; the suite is green; the recorded baseline is byte-identical (`sha256 0065c34a…`, `a lighthouse at dusk`, seed 7, 512×512). |
+| **B2** | **The dependency.** `gradio` — 53 packages, with `fastapi` and `uvicorn` among them — into `.venv` and `requirements.txt`. | P9 | Network, and the acceptance that a deliberately bare venv stops being bare. | `import gradio` succeeds under `.venv/bin/python`; `requirements.txt` pins it; the suite is green; `docs/context.md`'s "the venv has no fastapi" sentence is rewritten in the same work unit. |
+| **B3** | **The second model's checkpoint.** P10's row said "it needs no download": that meant no *separate text-encoder* download. The checkpoint is not in `model/assets/` and is not on this machine. | P10 | A source and a revision, named by the operator, then a download and a digest. | The file in `model/assets/`, declared by an entry, pinned by digest, and the census measured through the new adapter. |
+| **B4** | **D1–D3**, the three operator decisions: where entries live, how the served entry is chosen, and what a non-default entry with a missing asset does. | U3 | The operator's answers, one per line. | Three answers recorded in protocol section 12, and U3's row unblocked. |
 
 ## Phases
 
@@ -21,7 +37,7 @@ No phase may start before the previous one has an **observed** exit: a command w
 | **P7** | The rename and the first commit: the project stops being named after its first adapter (`coltman-images-service`), and version control stops being a debt. | The suite is green under the new name, a still is byte-identical to the pre-rename one, and `git log` shows a first commit with no history invented before it. | done, 2026-11-15 |
 | **P8** | One instance, one card: the `flock` mutex on `run/server.lock`, taken before any model work, plus the `/proc` scan that catches a server started outside the CLI. The old boot order made the port useless as a guard — load, warm up, then bind meant a second process exhausted the card before it could ever reach the bind. | Guard 12 proves three things: a deleted state file does not allow a second process, a direct `python -m coltman_images.server` is refused and names the holder's pid, and exactly one server process exists after each attempt. | done, 2026-11-15 |
 | **P9** | The web UI, inside this project: `start --ui` serves a page from the same process and the same queue. Gradio is the first rendering of it, behind a seam so that what is on screen can be replaced without touching what the system does. The operator ruled that the UI belongs here rather than in a second repository: a system that needs another project to show itself is not independent. | A page renders a still through the queue; two concurrent submissions serialise; the screen states SD or HD, the base the stage started from, the census and the three timings; guard 13 proves the UI never renders outside the queue. | planned |
-| **P10** | The second adapter: DreamShaper XL — a different family, a different checkpoint format, and no shared code beyond the contract. Its single-file checkpoint carries its own text encoders, so it needs no download. | The same core serves it with one adapter module and one entry, and no change to `server.py`, `render.py`, `entry.py`, or the surface the law declares. | planned |
+| **P10** | The second adapter: DreamShaper XL — a different family, a different checkpoint format, and no shared code beyond the contract. Its single-file checkpoint carries its own text encoders, so it needs no *separate* encoder download — but the checkpoint itself is not in this tree and is not on this machine (blocker B3). | The same core serves it with one adapter module and one entry, and no change to `server.py`, `render.py`, `entry.py`, or the surface the law declares. | planned |
 | **P11** | The step range as a declared contract: `limits.steps` in the entry, so a request outside the measured range is refused at the door instead of rendering outside it. The ladder behind the range is measured and recorded. | A request outside the declared range is refused at validation; `docs/reference/steps-ladder.md` and protocol section 12 carry the measurement and the ruling. | done, 2026-11-15 |
 | **P12** | External clients. This phase lives outside this project: the surface is declared, and a client adapts to it. The first-party UI is not one of them — it is P9, and it lives here. | Nothing here. | outside |
 
@@ -55,8 +71,8 @@ No phase may start before the previous one has an **observed** exit: a command w
 
 The UI is declared, not built. Its shape is fixed by three facts: a request costs 46 s, the queue is single-flight, and a browser cannot read a filesystem path.
 
-1. **The dependency, declared.** `gradio` into `.venv` and `requirements.txt` — 53 packages, with `fastapi` and `uvicorn` among them. That falsifies `context.md`'s "the venv has no fastapi, so the API uses `http.server`": the API stays stdlib **by decision**, and the UI brings its own server. The sentence is rewritten in the same work unit, not left to rot.
-2. **The submission seam.** One function on the warm server — `submit(request) -> response` — is what `POST /generate` already calls. The UI calls that and never the adapter. Without this the UI is a second renderer outside the queue, and two browser tabs are two models on one card.
+1. **The dependency, declared (B2).** `gradio` into `.venv` and `requirements.txt` — 53 packages, with `fastapi` and `uvicorn` among them. That falsifies `context.md`'s "the venv has no fastapi, so the API uses `http.server`": the API stays stdlib **by decision**, and the UI brings its own server. The sentence is rewritten in the same work unit, not left to rot.
+2. **The submission seam (B1).** One function on the warm server — `submit(request) -> response` — that `POST /generate` calls. It does **not** exist yet: the handler validates, plans, enqueues and waits inline, so this is an extraction and not a rewiring. The UI calls that seam and never the adapter. Without it the UI is a second renderer outside the queue, and two browser tabs are two models on one card.
 3. **`coltman_images/ui.py`.** Gradio Blocks: prompt, seed, an SD/HD switch, progress, the still. Its presentation must be replaceable without touching the seam — a UI is allowed to be plain; it is not allowed to be load-bearing.
 4. **The honest copy.** SD or HD stated; when the stage ran, the base it started from (`upscale.from`); the census; `render_s`, `load_s` and `duration_s` kept separate; and the queue depth while it waits, because a 46 s request behind another one must not look like a hang.
 5. **`start --ui [--ui-port 7860]`.** Three commands stay three: the UI is a flag on `start`, not a fourth verb.
