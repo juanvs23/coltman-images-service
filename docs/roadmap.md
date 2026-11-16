@@ -2,9 +2,9 @@
 
 ## Next step
 
-**P8 — one instance, one card.** It is already half-built: the `flock` mutex and the `/proc` scan are in `coltman_images/server.py` and `bin/coltman-images`, and the mutex was proven by hand — a stub holding the lock makes `start` refuse and name the holder's pid. What is missing is the guard that keeps it true, and the law that records it.
+**P9 — the web UI, inside this project.** P8 closed on 2026-11-15: `flock` on `run/server.lock` is taken before the entry is resolved, the `/proc` scan catches a server launched outside the CLI, and guard 12 proves that a deleted state file cannot buy a second instance. Thirteen tests, all green in 416 s.
 
-Running beside it, and not a phase: **the steps ladder** (see *the measurement that is not a guard*). Thirty-five of forty-five stills exist; the rest are rendering.
+The UI is declared in eight steps below. It is the first work in this project that is not a service primitive, and it is the first that adds a dependency tree — 53 packages — to a venv that has been deliberately bare.
 
 No phase may start before the previous one has an **observed** exit: a command whose output is the proof. A document is not an exit criterion.
 
@@ -19,7 +19,7 @@ No phase may start before the previous one has an **observed** exit: a command w
 | **P5** | `coltman-images generate` as the CLI client of the API, and the parity proof. | One prompt through the CLI writes the still (default folder or the requested path) and prints its path; a direct POST for the same seed produces the same bytes. | done, 2026-11-15 |
 | **P6** | The eleven guards of protocol section 10, at protocol section 10's thresholds. | The suite runs under the production interpreter; every guard passes or reports its failure as a failure. | done, 2026-11-15 |
 | **P7** | The rename and the first commit: the project stops being named after its first adapter (`coltman-images-service`), and version control stops being a debt. | The suite is green under the new name, a still is byte-identical to the pre-rename one, and `git log` shows a first commit with no history invented before it. | done, 2026-11-15 |
-| **P8** | One instance, one card: the `flock` mutex on `run/server.lock`, taken before any model work, plus the `/proc` scan that catches a server started outside the CLI. The old boot order made the port useless as a guard — load, warm up, then bind meant a second process exhausted the card before it could ever reach the bind. | Guard 12 proves three things: a deleted state file does not allow a second process, a direct `python -m coltman_images.server` is refused and names the holder's pid, and exactly one server process exists after each attempt. | current |
+| **P8** | One instance, one card: the `flock` mutex on `run/server.lock`, taken before any model work, plus the `/proc` scan that catches a server started outside the CLI. The old boot order made the port useless as a guard — load, warm up, then bind meant a second process exhausted the card before it could ever reach the bind. | Guard 12 proves three things: a deleted state file does not allow a second process, a direct `python -m coltman_images.server` is refused and names the holder's pid, and exactly one server process exists after each attempt. | done, 2026-11-15 |
 | **P9** | The web UI, inside this project: `start --ui` serves a page from the same process and the same queue. Gradio is the first rendering of it, behind a seam so that what is on screen can be replaced without touching what the system does. The operator ruled that the UI belongs here rather than in a second repository: a system that needs another project to show itself is not independent. | A page renders a still through the queue; two concurrent submissions serialise; the screen states SD or HD, the base the stage started from, the census and the three timings; guard 13 proves the UI never renders outside the queue. | planned |
 | **P10** | The second adapter: DreamShaper XL — a different family, a different checkpoint format, and no shared code beyond the contract. Its single-file checkpoint carries its own text encoders, so it needs no download. | The same core serves it with one adapter module and one entry, and no change to `server.py`, `render.py`, `entry.py`, or the surface the law declares. | planned |
 | **P11** | The step range as a declared contract: `limits.steps` in the entry, so a request outside the measured range is refused at the door instead of rendering outside it. The ladder behind the range is measured and recorded. | A request outside the declared range is refused at validation; `docs/reference/steps-ladder.md` and protocol section 12 carry the measurement and the ruling. | planned |
@@ -47,9 +47,9 @@ No phase may start before the previous one has an **observed** exit: a command w
 1. `flock` on `run/server.lock` — **in code**: taken at the top of the server's entry point, before the entry is resolved and long before a weight is loaded; held for the process's life, so the kernel drops it on `kill -9` and a stale lock cannot exist.
 2. The `/proc` scan — **in code**: a process counts as this server only when its interpreter is Python *and* `coltman_images.server` is one of its own argument tokens. Matching the text anywhere on a command line made the shell that ran the check look like a server.
 3. The CLI pre-check — **in code**: `start` asks the mutex before spawning. Held and answering → report it, exit 0. Held and silent → say so, exit 4. Nothing is spawned while the card is owned.
-4. The guard — **missing**: three assertions, numbered so they run before the lifecycle guard that stops the server.
-5. The law — **missing**: section 6 and section 10 must record the mutex and guard 12.
-6. The GPU-free half — **provable now, on a busy card**: a stub holding the lock must make the server refuse *without loading anything*, which is the property that matters and the one that needs no render to check.
+4. The guard — **done**: `test_0850_guard12_one_instance`, numbered so it runs before the lifecycle guard that stops the server. It deletes the state file, proves `start` reports instead of spawning and names the pid, launches `python -m coltman_images.server` on another port and proves exit 4 before any weight loads, then restores the state file the server only writes at boot.
+5. The law — **done**: section 6 declares the mutex and why the boot order made the port useless as a guard; section 10 carries guard 12; exit code 4 covers "another instance already owns the card".
+6. The GPU-free half — **done and observed**: the direct second server printed `instance: another server already owns this card (pid 520734)` and exited 4 in under a second, on a card that was busy.
 
 ## P9 in order
 

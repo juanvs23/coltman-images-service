@@ -1123,6 +1123,79 @@ class ServiceCase(GuardCase):
 
     # --- 9: guard 2, last, because it stops the server --------------------
 
+    def test_0850_guard12_one_instance(self) -> None:
+        """Guard 12: one card, one instance — a deleted state file cannot buy a second.
+
+        The mutex is the truth and the state file is a convenience. Two things are
+        proved: `start` reports the running server instead of spawning a second
+        once the state file is gone, and a server launched by hand on another port
+        is refused **before it loads a weight**, because the lock is taken before
+        the entry is even resolved.
+
+        The state file is restored at the end: the server writes it only at boot,
+        and guard 2's `stop` reads it.
+        """
+        pids_before = _server_pids()
+        self.assertEqual(len(pids_before), 1, f"expected exactly one server, saw {pids_before}")
+        self.assertIsNotNone(_state(), "guard 12 needs the state file the fixture recorded")
+
+        STATE_FILE.unlink()
+        self.assertFalse(STATE_FILE.exists(), "the state file survived its deletion")
+
+        again = _cli("start", timeout=120)
+        print(
+            f"guard 12: state file deleted, start exit {again.returncode}, "
+            f"pids {_server_pids()} (was {pids_before})"
+        )
+        self.assertEqual(
+            _server_pids(), pids_before, f"a second instance appeared: {_server_pids()}"
+        )
+        self.assertEqual(
+            again.returncode, 0, f"start failed instead of reporting: {again.stderr.strip()}"
+        )
+        self.assertIn(
+            str(pids_before[0]),
+            again.stdout + again.stderr,
+            "start did not name the running server",
+        )
+
+        direct = subprocess.run(
+            [str(PYTHON), "-m", "coltman_images.server", "--port", "8599"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        message = (direct.stdout + direct.stderr).strip()
+        last_line = message.splitlines()[-1][:110] if message else "(silent)"
+        print(f"guard 12: direct second server exit {direct.returncode} — {last_line}")
+        self.assertEqual(
+            direct.returncode,
+            4,
+            f"a hand-launched second server exited {direct.returncode}: {message}",
+        )
+        self.assertIn("instance", message.lower(), "the refusal did not name the reason")
+        self.assertEqual(_server_pids(), pids_before, "the refused start left a process behind")
+
+        # The server writes the state file only at boot, so the test puts it back
+        # from /health — guard 2's stop reads it, and a deleted file would make
+        # `stop` report "not running" while a server is still holding the card.
+        status, body = _health()
+        self.assertEqual(status, 200, "/health stopped answering during guard 12")
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(
+            json.dumps(
+                {
+                    key: body[key]
+                    for key in ("pid", "port", "model", "started_at", "warm_at", "census")
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(_server_pids(), pids_before, "more than one instance after the restore")
+
     def test_0900_guard02_lifecycle(self) -> None:
         """Guard 2: start → health warm → generate → stop, and the idempotent edges.
 

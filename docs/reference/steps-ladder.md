@@ -95,6 +95,37 @@ Recorded in protocol section 12 by the operator on 2026-11-15:
 - **Below 8 is not adopted**: under the distilled design of the model, and
   visibly dirty at 4–6.
 
+## The lever
+
+The step count is the only quality-versus-time lever this system has that costs
+nothing to change: the same weights serve every value, so an entry that differs
+only in `steps` is a second file and not a second model, and switching between
+them puts nothing new on the card.
+
+Pick the row by what you are willing to pay, not by what sounds better:
+
+| Intent | Steps | Time at 1280×720 | What the ladder says |
+| --- | --- | --- | --- |
+| Draft, thumbnail | 8 | 31.8 s | The model's own distilled design point. Acceptable, with a reframing risk between 8 and 10 on some seeds |
+| Fast batch | 10 | 39.5 s | Still under the knee; the pitcher's interior and small objects are settling |
+| **Default** | **12** | **47.1 s** | The minimum where the scene and its principal detail are settled |
+| Quality | 14 | 55.1 s | The cut if the criterion is visible gain for each 15 % of extra time |
+| Maximum useful | 16 | 62.9 s | The last range where SSIM still rises. Above it, +49 % to reach 24 buys no convergence |
+| — | below 8 | — | Under the distilled design, and visibly dirty on the pitcher at 4–6. Not adopted |
+| — | above 16 | — | Not refused by the scheduler — it renders — but it does not converge, so it is refused by the ruling |
+
+Two cautions, because a lever is easy to misread:
+
+- **More is not better.** The curve turns; it does not climb. Past 16 the extra
+  forwards buy a different image, not a more defined one.
+- **3.87 s per step is this card's price at 1280×720.** Another resolution moves
+  the absolute seconds; it does not change the shape of the trade.
+
+The lever is only as honest as its measurement, and the measurement has one hole:
+nobody has scored the eight error categories against the forty-five stills. Until
+that happens, the table tells you what changes and what it costs, and it does not
+tell you which row looks better.
+
 ## What this does not establish
 
 - **SSIM measures how much the image changes, not whether it is better.** A high

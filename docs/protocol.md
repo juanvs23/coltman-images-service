@@ -157,7 +157,7 @@ Errors are always `{"error": {"code": ..., "message": ...}}` — never a bare st
 | 1 | render failed |
 | 2 | invalid request |
 | 3 | a declared asset is missing |
-| 4 | the server is not available (not running, unreachable, or the port could not be claimed) |
+| 4 | the server is not available (not running, unreachable, another instance already owns the card, or the port could not be claimed) |
 
 A CLI failure maps the server's status as `400 → 2`, `500 → 1`; no state file or an unreachable port is `4`; a missing asset at `start` is `3`. A request the server never accepted is `4`; a request the server accepted and failed is `1`.
 
@@ -176,7 +176,9 @@ The three commands are one state machine.
 
 Binding after warm-up is deliberate: an answering port means the assets have been read once and the model has loaded end to end — not that 6.29 GB sits in VRAM. The transformer occupies 6057 MiB and the text encoder 4207, so the card cannot hold both: each request brings in what it needs, and the peak is the larger of the two, not their sum. Moving the transformer off the card and back costs 2.8 s, while bringing it in from a warm page cache costs 0.9 s, so a server that kept it resident would be slower, not faster.
 
-`start` is idempotent: if the server is already running the running server wins — `start` reports its pid, port and state and exits 0; a `--port` that differs from the running server's is reported on stderr and ignored, never treated as an error, and never starts a second server. The default is background; `--foreground` keeps it attached to the terminal.
+`start` is idempotent: if the server is already running the running server wins — `start` reports its pid, port and state and exits 0; a `--port` that differs from the running server's is reported on stderr and ignored, never treated as an error, and never starts a second server.
+
+**One instance, one card.** `start` takes `run/server.lock` with `flock` before it resolves the entry and long before it loads a weight, and holds it for the life of the process. The kernel drops it when the process dies, including on `kill -9`, so a stale lock cannot exist — which is why this is a lock and not a PID file. The boot order decides this: load, warm up, then bind, so the port cannot be the guard, because a second process exhausts the card before it ever tries to bind and the bind error would arrive after the damage. A second `start`, a hand-launched `python -m coltman_images.server` on any port, and a state file deleted while a server is running are all refused with exit 4 and the holder's pid. `run/server.json` is a convenience for operators; the lock is the truth. The default is background; `--foreground` keeps it attached to the terminal.
 
 `generate`:
 
@@ -330,7 +332,7 @@ Six steps, each built and exercised alone before the next begins.
 
 ## 10. The test matrix
 
-Eleven guards, each with the failure it catches.
+Twelve guards, each with the failure it catches.
 
 | # | Guard | Failure it catches |
 | --- | --- | --- |
@@ -345,6 +347,7 @@ Eleven guards, each with the failure it catches.
 | 9 | Single-flight: two concurrent requests both succeed and never run two models. | A second worker that doubles the load and splits the VRAM budget. |
 | 10 | The upscale stage runs only when the request permits it and exceeds the native ceiling; when it runs, the response declares the base it started from and the stage's own cost, and the census stays the render's. | A stage that silently synthesizes pixels, or a response that lets a reader believe the model rendered them. |
 | 11 | The core imports nothing from the model stack: no `diffusers`, `transformers`, `safetensors`, `coltman_images.loader` or `coltman_images.fp8` is reachable from `server.py`, `entry.py` or `render.py`. | A core that must be edited for every new model, which is the coupling an adapter exists to remove. |
+| 12 | One instance, one card: with the state file deleted, `start` reports the running server instead of spawning a second; a hand-launched `python -m coltman_images.server` on another port is refused before it loads a weight; exactly one server process exists after each attempt. | A second process loading a second transformer onto a card that holds one, which is an out-of-memory crash rather than a slow request. |
 
 ## 11. The cost model the system is built against
 
