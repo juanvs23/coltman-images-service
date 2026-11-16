@@ -24,6 +24,36 @@ follow.
 | **B3** | **The second model's weights and the sidecars the single file does not carry.** The checkpoint is not in `model/assets/` and not on this machine. The single file does carry the UNet, both CLIP encoders and the VAE — but **no configs and no tokenizers**, and diffusers resolves those from `stabilityai/stable-diffusion-xl-base-1.0` on the Hub when they are not supplied, which protocol section 2 refuses. So the blocker is 6,939,220,250 bytes of checkpoint **plus ~3.2 MB of declared sidecars**: `model_index.json`, `unet/config.json`, `vae/config.json`, the scheduler config, and both tokenizer directories. | P10 | A variant chosen by the operator, then a download of the file and its sidecars from the same pinned commit. | The checkpoint and its sidecars in `model/assets/`, digests recorded and verified against the downloaded bytes, and the format read well enough to say what the adapter must own — a census through that adapter is **P10's** exit, not this one. |
 | **B4** | **D1–D3**, the three operator decisions: where entries live, how the served entry is chosen, and what a non-default entry with a missing asset does. | U3 | The operator's answers, one per line. | Three answers recorded in protocol section 12, and U3's row unblocked. |
 
+### Deferred behind P9 — the operator's order of 2026-11-16
+
+B3, P10 and U3 wait for P9. The ruling: **build the UI first, and test a new model through it when it works.** Nothing
+about the UI's construction depends on them — P9 needs B1 and B2, both cleared — so this is an ordering decision and not
+a dependency. The survey behind B3 is recorded here so the work resumes without repeating it.
+
+The three usable single-file checkpoints are the same 6,939,220,250 bytes with identical headers. The digests below are
+the Hub's LFS oids, which are the files' `sha256`; they are **pins to verify against the downloaded bytes**, not declared
+assets, and nothing here is adopted until an entry declares it.
+
+| Variant | Revision | File | `sha256` to verify |
+| --- | --- | --- | --- |
+| `Lykon/dreamshaper-xl-v2-turbo` | `f70ad5bce436c640d23fc02cd0a6ccc787280b6e` | `DreamShaperXL_Turbo_v2.safetensors` | `4726d3bab1876f5c23734c871c47901fde305115e15fbfa3f33354ac45b11c67` |
+| `Lykon/dreamshaper-xl-lightning` | `561086c22aba3925b1e8803a73857f061635c7c3` | `DreamShaperXL_Lightning.safetensors` | `fdbe56354b8f876b736f24d3ad867ecd4140c019f57642ec8ddd878088d44f64` |
+| `Lykon/dreamshaper-xl-turbo` | `402d2e0210f3d6ea01d91a4485869f31be633dca` | `DreamShaperXL_Turbo_dpmppSdeKarras_half_pruned_6.safetensors` | `676f0d60c8e860146d5e8a0d802599cadd04e7cadf85c283f189f41f01c9e359` |
+
+Each repo also carries an SFW variant at the same size; the sidecars sit in the same commit, so no further research is
+needed before a download.
+
+**What resuming needs, in this order:**
+
+1. **The variant**, one line — which of the three, and SFW or general.
+2. **The regime the entry declares** — `guidance` and `steps`. Every candidate's card says `guidance_scale=2` and 4–6
+   steps, against this system's `0.0` and `12`. Choosing 2 makes CFG active, which gives section 4.1's "there is no
+   negative prompt" the qualifier it will then need in the same work unit.
+3. **D2 alone**, to serve the new entry: `start --model <id>`. D1 (where entries live) and D3 (a non-default entry whose
+   asset is missing) belong to U3, and **U3 can wait** — a second model can be *tested* through the UI without a
+   per-request selector, because serving it is a choice made at `start`, not at submission.
+4. **B3 then P10**, as their rows declare.
+
 ## Phases
 
 | Phase | Scope | Exit criterion | Status |
@@ -74,7 +104,7 @@ The UI is declared, not built. Its shape is fixed by three facts: a request cost
 1. **The dependency, declared (B2).** `gradio` into `.venv` and `requirements.txt` — twenty new packages on a closure of fifty, `fastapi` and `uvicorn` among them. That falsifies `context.md`'s "the venv has no fastapi, so the API uses `http.server`": the API stays stdlib **by decision**, and the UI brings its own server. The sentence is rewritten in the same work unit, not left to rot.
 2. **The submission seam (B1).** One function on the warm server — `submit(request) -> response` — that `POST /generate` calls. It does **not** exist yet: the handler validates, plans, enqueues and waits inline, so this is an extraction and not a rewiring. The UI calls that seam and never the adapter. Without it the UI is a second renderer outside the queue, and two browser tabs are two models on one card.
 3. **`coltman_images/ui.py`.** Gradio Blocks: prompt, seed, an SD/HD switch, progress, the still. Its presentation must be replaceable without touching the seam — a UI is allowed to be plain; it is not allowed to be load-bearing.
-4. **The honest copy.** SD or HD stated; when the stage ran, the base it started from (`upscale.from`); the census; `render_s`, `load_s` and `duration_s` kept separate; and the queue depth while it waits, because a 46 s request behind another one must not look like a hang.
+4. **The honest copy.** SD or HD stated; when the stage ran, the base it started from (`upscale.from`); the census; `render_s`, `load_s` and `duration_s` kept separate; and the queue depth while it waits, because a 46 s request behind another one must not look like a hang. Two constraints already hold today and must survive a second entry: **the census renders generically** — key and value exactly as the response declares them, never Z-Image's `float8`/`plain`/`other`/`total` written into the UI, because section 6.1 makes the adapter the owner of what a census key means and the next model has no FP8 at all (measured: 2516 tensors, every one F16); and **every size comes from the entry or the response** — `limits.max_pixels` and the defaults are per-entry, so the SD/HD switch must not carry 1280×720 as a constant.
 5. **`start --ui [--ui-port 7860]`.** Three commands stay three: the UI is a flag on `start`, not a fourth verb.
 6. **Guard 13.** Two concurrent UI submissions serialise, and the UI module imports no adapter — the same boundary guard 11 draws for the core.
 7. **The law.** Section 1 gains the UI as a surface, section 5 a subsection, section 6 the flag, section 7 the option.
