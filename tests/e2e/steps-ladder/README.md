@@ -57,15 +57,26 @@ convergence point — and it is a judgment, recorded beside the score.
 
 | Steps | Time | Errors (mean of 5 seeds) | SSIM vs previous | Composition stable |
 | --- | --- | --- | --- | --- |
-| 4 | | | — | |
-| 6 | | | | |
-| 8 | | | | |
-| 10 | | | | |
-| 12 | | | | |
-| 14 | | | | |
-| 16 | | | | |
-| 20 | | | | |
-| 24 | | | | |
+| 4 | 16.5 s | | — | |
+| 6 | 24.1 s | | 0.7721 | |
+| 8 | 31.8 s | | 0.7858 | |
+| 10 | 39.5 s | | 0.8075 | |
+| 12 | 47.1 s | | 0.8612 | |
+| 14 | 55.1 s | | 0.8832 | |
+| 16 | 62.9 s | | **0.9000** | |
+| 20 | 78.4 s | | 0.8853 | |
+| 24 | 93.9 s | | 0.8985 | |
+
+Times and SSIM are measured (45 stills, five seeds, 2026-11-15). The error column
+is empty on purpose: it is the judgment this protocol exists to collect.
+
+**Read the SSIM column as convergence, never as quality.** A higher value means
+the two step counts produced *more similar* images — the model changed less — not
+that either is better. The column never approaches 1 at any step count: even at
+the top of the ladder, consecutive values differ structurally by about a tenth.
+And the sequence is not monotonic: 16→20 is **less** stable than 14→16 while
+costing 25 % more time, which is where the operator predicted the real ceiling
+would show. That is the row to look at first.
 
 ## The decision rule
 
