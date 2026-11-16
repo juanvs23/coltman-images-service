@@ -64,6 +64,20 @@ The UI is declared, not built. Its shape is fixed by three facts: a request cost
 7. **The law.** Section 1 gains the UI as a surface, section 5 a subsection, section 6 the flag, section 7 the option.
 8. **The README.** A "use the browser" section beside the CLI and the curl examples.
 
+## The entry-generalization brief
+
+Three units, written from a read of the code and tracked here so they are not lost between phases. The brief is the operator's; this is its placement.
+
+| Unit | What | Roadmap | Status |
+| --- | --- | --- | --- |
+| **U1** | A neutral entry schema: the law validates the envelope and the shape, the adapter owns the model's names | prerequisite of P10 | **done, 2026-11-15**, guard 14 |
+| **U2** | `steps` as a request field, with `limits.steps` bounding it | P11 | next |
+| **U3** | Select a model per request and swap on demand | the promise in §6.1 | blocked on D1–D3 below |
+
+U3 needs three operator decisions before any code: where entries live (`model/entries/<id>.yaml`), how the served entry is chosen (`start --model <id>`), and what happens to a non-default entry whose assets are missing — the last one departing from §6.1's "an undeclared asset refuses at start", which is why it is asked rather than assumed.
+
+U1 also found a coupling the brief did not know about: `server.py` formatted its warm-up log line from Z-Image's census keys, so `start` would have failed on a foreign census *after* loading. Fixed in the same unit, and guard 14c now holds the core to the rule the law states.
+
 ## The measurement that is not a guard
 
 The guards are automatable and block. One question does **not** fit a guard, because it needs a judgment: which step count is worth its time. It is a **measurement protocol**, not a pass/fail test, and it lives in `tests/e2e/steps-ladder/`:

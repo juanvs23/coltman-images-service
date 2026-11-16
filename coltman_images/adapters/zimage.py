@@ -51,7 +51,7 @@ from PIL import Image
 from safetensors import safe_open
 from transformers import AutoTokenizer, Qwen3Config, Qwen3ForCausalLM
 
-from ..adapter import DEVICE
+from ..adapter import DEVICE, AdapterError
 from ..entry import Entry
 from ..loader import assert_census, census, load_transformer
 
@@ -60,11 +60,63 @@ logger = logging.getLogger(__name__)
 TEXT_DTYPE = torch.bfloat16
 """The caption features' dtype — what the transformer's caption embedder expects."""
 
-__all__ = ["ZImageAdapter", "ZImageAdapterError"]
+REQUIRED_COMPONENTS = (
+    "transformer_config",
+    "vae",
+    "vae_config",
+    "text_encoder",
+    "text_encoder_dir",
+    "scheduler_config",
+)
+"""The components this adapter needs. The law does not know these names; they are
+the adapter's own declaration (protocol section 6.3), checked at construction so
+a missing asset is exit 3 before any GPU work rather than a failure mid-render."""
+
+CENSUS_KEYS = ("float8", "plain", "other", "total")
+"""What this adapter's census counts. The entry's declaration must speak these names."""
+
+__all__ = ["CENSUS_KEYS", "REQUIRED_COMPONENTS", "ZImageAdapter", "ZImageAdapterError"]
 
 
 class ZImageAdapterError(Exception):
     """Z-Image's pieces do not fit the entry the adapter was handed."""
+
+
+def _refuse_incoherent_entry(entry: Entry) -> None:
+    """Refuse an entry that cannot describe this model, before anything is loaded.
+
+    Two declarations are Z-Image's to check, not the law's: the components it
+    builds from, and the census it must reproduce. Both are refused with
+    `AdapterError`, which the server maps to exit 3 — the same exit a missing
+    asset has always had, and still before a weight is read (protocol 6.1, 6.3).
+    """
+    missing: list[str] = []
+    for name in REQUIRED_COMPONENTS:
+        try:
+            getattr(entry.components, name)
+        except AttributeError:
+            missing.append(name)
+    if missing:
+        raise AdapterError(
+            f"components: the zimage adapter needs {list(REQUIRED_COMPONENTS)}; this entry "
+            f"declares {sorted(entry.components.paths)} and is missing {missing}"
+        )
+
+    declared = entry.expected_census
+    absent = [key for key in CENSUS_KEYS if key not in declared]
+    if absent:
+        raise AdapterError(
+            f"expected_census: the zimage adapter counts {list(CENSUS_KEYS)}; this entry "
+            f"declares {sorted(declared)}, so {absent} cannot be compared"
+        )
+    counts = {key: int(declared[key]) for key in CENSUS_KEYS}
+    if counts["float8"] == 0:
+        raise AdapterError("expected_census.float8: a model with no Float8 weights cannot load as FP8")
+    if counts["float8"] + counts["plain"] + counts["other"] != counts["total"]:
+        raise AdapterError(
+            "expected_census: float8 + plain + other must equal total "
+            f"({counts['float8']} + {counts['plain']} + {counts['other']} != {counts['total']})"
+        )
 
 
 class ZImageAdapter:
@@ -80,6 +132,11 @@ class ZImageAdapter:
     def __init__(self, entry: Entry) -> None:
         self.entry = entry
         self.last_load_s = 0.0
+
+        # Construction is the door: a component this model needs that the entry
+        # does not declare, or a census declaration this model cannot reproduce,
+        # is refused here — before `prepare`, before a weight is read.
+        _refuse_incoherent_entry(entry)
 
         self._tokenizer: Any = None
         self._vae: Any = None

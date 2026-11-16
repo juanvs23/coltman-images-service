@@ -8,12 +8,14 @@ checkpoint: model/assets/checkpoint.safetensors
 
 components:
   transformer_config: model/z_image.json
-  transformer_config_digest: sha256:06d49d1ae533f825c4704cc616fc8bc7826e9d449dde292cc7a95163c69af24a
   vae: model/assets/vae.safetensors
   vae_config: model/assets/vae_config.json
   text_encoder: model/assets/qwen3/qwen3_quanto_bf16_int8.safetensors
   text_encoder_dir: model/assets/qwen3
   scheduler_config: model/assets/scheduler_config.json
+
+digests:
+  transformer_config: sha256:06d49d1ae533f825c4704cc616fc8bc7826e9d449dde292cc7a95163c69af24a
 
 steps: 12
 guidance: 0.0

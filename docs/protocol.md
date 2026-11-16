@@ -64,17 +64,19 @@ A request never carries a prompt to compose. It carries the prompt it wants rend
 | `width` | integer | no | Default from the entry: 1280. A positive multiple of 16, at least 256. The vendor bounds the model by total pixel area, not by axis, so the limit that binds is the area: `width × height` must not exceed the entry's `limits.max_pixels`, unless the request permits the upscale stage (section 6.2). |
 | `height` | integer | no | Default from the entry: 720. Same rule. |
 | `out` | string | no | When given, must be an absolute path; the server creates missing parent directories. Absent means the default folder `out/`, filename `<UTC timestamp:YYYYMMDDTHHMMSSZ>-<seed>.png`. |
+| `steps` | integer | no | Absent means the entry's `steps` — 12 today. When given it must be an integer inside the entry's `limits.steps`, 8 to 16 by the operator's ruling (section 12), and a value outside that range is refused at the door before any adapter call. The same weights serve every value, so nothing swaps. |
 | `upscale` | boolean | no | Absent means the native render and nothing else. `true` is the client's permission for the stage of section 6.2 to synthesize the pixels above `limits.max_pixels` — and only then. |
 
 An unknown field is a validation failure, not a field to ignore.
 
-The closed vocabulary is `prompt`, `seed`, `width`, `height`, `out` and `upscale`. Each entry declares the subset it accepts, in `request_fields` (section 6.1); a field outside that subset is refused exactly like an unknown field, so the wire stays closed while a different model can accept a different subset. `upscale` is a permission, not a command: it says the client accepts pixels the model did not render, and only the declared stage of section 6.2 may produce them. There is no negative prompt: the production entry runs `guidance: 0.0`, the installed diffusers ignores `negative_prompt` below `guidance_scale` 1, and the Turbo model is distilled with no CFG branch — a negative could not act. Steering happens in the prompt itself, positively and concretely.
+The closed vocabulary is `prompt`, `seed`, `width`, `height`, `out`, `steps` and `upscale`. Each entry declares the subset it accepts, in `request_fields` (section 6.1); a field outside that subset is refused exactly like an unknown field, so the wire stays closed while a different model can accept a different subset. `upscale` is a permission, not a command: it says the client accepts pixels the model did not render, and only the declared stage of section 6.2 may produce them. There is no negative prompt: the production entry runs `guidance: 0.0`, the installed diffusers ignores `negative_prompt` below `guidance_scale` 1, and the Turbo model is distilled with no CFG branch — a negative could not act. Steering happens in the prompt itself, positively and concretely.
 
 ### 4.2 Generation response
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `out` | string | Absolute path actually written. |
+| `steps` | integer | The step count this still was rendered with: the request's value, or the entry's default when the request named none. |
 | `seed` | integer | Seed used for this still. |
 | `width` | integer | Width rendered. |
 | `height` | integer | Height rendered. |
@@ -93,7 +95,7 @@ Two doors, one implementation. The CLI is a client of the HTTP API; it contains 
 
 ```
 coltman-images start [--port N] [--foreground]
-coltman-images generate --prompt "..." [--seed N] [--width N] [--height N] [--out PATH] [--upscale] [--json]
+coltman-images generate --prompt "..." [--seed N] [--width N] [--height N] [--out PATH] [--steps N] [--upscale] [--json]
 coltman-images stop
 ```
 
@@ -222,23 +224,19 @@ Declared absence: the server never self-terminates on idle. What it holds while 
 
 `model/entry.yaml`:
 
-| Field | Type | Value |
+| Field | Type | Rule |
 | --- | --- | --- |
-| `id` | string | `z-image-turbo-fp8` |
-| `adapter` | string | `zimage` — which model adapter serves this entry (section 6.3) |
-| `checkpoint` | path | the production checkpoint |
-| `components.transformer_config` | relative path | `model/z_image.json` |
-| `components.transformer_config_digest` | `sha256:<hex>` | the digest of the copied file; `start` refuses a mismatch |
-| `components.vae` | path | the VAE weights |
-| `components.vae_config` | path | the VAE config |
-| `components.text_encoder` | path | the Qwen3 text encoder weights |
-| `components.text_encoder_dir` | path | the text encoder directory |
-| `components.scheduler_config` | path | the scheduler config |
-| `steps` | integer | 12 |
+| `id` | string | non-empty; the entry's name |
+| `adapter` | string | the name of a model adapter (section 6.3) |
+| `checkpoint` | path | the production checkpoint; must exist |
+| `components` | mapping | free keys, chosen by the adapter. Each value is a path relative to the project root and every one must exist |
+| `digests` | mapping, optional | component name → `sha256:<hex>`. Each key must name a component and each digest must match the file |
+| `steps` | integer | 12 — the default a request inherits, and it must lie inside `limits.steps` |
 | `guidance` | number | 0.0 |
 | `limits.max_pixels` | integer | 921600 — the largest area measured to render on this card (1280×720); validation refuses anything above it |
-| `request_fields` | list of strings | `[prompt, seed, width, height, out, upscale]` — a subset of the closed vocabulary (section 4.1) |
-| `expected_census` | object | `{"float8": 239, "plain": 282, "other": 0, "total": 521}` — guard 4 compares against it |
+| `limits.steps` | mapping | `{min: 8, max: 16}` — the range the ladder measured and the operator ruled (section 12). A request outside it is refused at the door, and the entry's own `steps` must lie inside it |
+| `request_fields` | list of strings | a subset of the closed vocabulary (section 4.1) |
+| `expected_census` | mapping | string → non-negative integer. The adapter owns what the keys mean |
 | `defaults.width` | integer | 1280 |
 | `defaults.height` | integer | 720 |
 | `defaults.format` | string | `png` |
@@ -249,9 +247,13 @@ Declared absence: the server never self-terminates on idle. What it holds while 
 
 Every asset path is relative to the project root. The interpreter is not a field: it is `.venv/bin/python`, the project's own, declared once in section 2.
 
-An unknown field, a missing required field, or an undeclared asset refuses at `start` with exit 3, before any GPU work. This file is the only declaration of the assets and the sampling regime: the system's code resolves every asset path from it and declares none of its own.
+**The law validates the envelope and the shape, never the model's identity.** It checks that `components` maps names to paths that exist, that every `digests` key names a component and every digest matches, and that `expected_census` maps names to non-negative integers. It does not know which components an adapter needs, and it does not know what a census key counts — those are the adapter's declaration, and section 6.3 lists Z-Image's.
 
-The entry declares the production FP8 checkpoint, the checkpoint loader and the regime. INT8 is the measured fallback (section 11) and is not in the entry: promoting it is an operator ruling, not a configuration change. The base Z-Image variant is not a fallback either: it is a different checkpoint with full CFG, negative prompting and 28–50 steps, and its 12.31 GB BF16 transformer does not fit this card. This system renders Turbo. One entry is loaded at a time, and the state file records which entry is served. A request names the tier it wants; the server serves it from the loaded entry or swaps — unload, load, warm-up — and because `render_s` measures the render alone, the swap's cost shows up as the gap between `duration_s` and `render_s` instead of hiding inside a single number. Today one entry exists and it accepts no tier field, so nothing can be selected. A second entry later is a second file plus its tier name and its place in that mapping — **and that is enough only while the second checkpoint speaks the same format and drives the same pipeline**. Every model-specific *value* already lives in the file, but the *code* that reads a checkpoint, builds the pipeline and drives its stages is Z-Image's: a second family needs an adapter behind the core, not just an entry beside it. The loader builds the FP8 weights from the checkpoint's own `qdata` and `_weight_scale` and owns the linear: it never copies the transformer to bfloat16 and never re-quantises. It floors the dynamic activation scale at `1e-12` itself — an all-zero activation row must not produce a zero scale (`docs/reference/upstream/`) — because torchao's `quantize_` was measured not to apply the configuration at all (section 12).
+An unknown field, a missing required field, a component path that does not exist, or a digest mismatch refuses at `start` with exit 3, before any GPU work. An adapter whose own required components are missing, or whose census declaration is incoherent for what it counts, refuses at construction with the same exit 3 and still before a weight is loaded: the words change hands, the guarantee does not. This file is the only declaration of the assets and the sampling regime; the system's code resolves every asset path from it and declares none of its own.
+
+The production entry declares the Turbo FP8 checkpoint and its regime. INT8 is the measured fallback (section 11) and is not in the entry: promoting it is an operator ruling, not a configuration change. The base Z-Image variant is not a fallback either — a different checkpoint with full CFG, negative prompting and 28–50 steps, and a 12.31 GB BF16 transformer that does not fit this card. This system renders Turbo.
+
+One entry is loaded at a time, and the state file records which one. A request names the tier it wants; the server serves it from the loaded entry or swaps — unload, load, warm-up — and because `render_s` measures the render alone, the swap's cost appears as the gap between `duration_s` and `render_s` instead of hiding inside one number. Today one entry exists and it accepts no tier field, so nothing can be selected. A second entry is a second file plus its tier name and its place in that mapping — and that is enough only while the second checkpoint speaks the same format and drives the same pipeline: every model-specific *value* already lives in the file, but the *code* that reads a checkpoint, builds a pipeline and drives its stages belongs to the adapter (section 6.3).
 
 ### 6.2 The upscale stage
 
@@ -288,6 +290,12 @@ The core serves requests; an adapter serves a model. The core — the server, th
 
 An entry naming an adapter the system does not have is refused at `start`, like any other undeclared asset. A second model is a second adapter plus a second entry, and the core does not change — which is what section 6.1 promised before the cut made it true.
 
+**What the `zimage` adapter requires.** The law does not know these names; this section does, because the adapter owns them:
+
+- components `transformer_config`, `vae`, `vae_config`, `text_encoder`, `text_encoder_dir` and `scheduler_config` — all six, and the adapter refuses at construction if one is absent.
+- `expected_census` carrying `float8`, `plain`, `other` and `total`, with `float8` above zero and `total` equal to the sum. The census counts parameters and excludes the quantisation scales; a model with no Float8 weights is refused, because a silent downgrade still produces a plausible image (guard 4).
+- the loader builds the FP8 weights from the checkpoint's own `qdata` and `_weight_scale` and owns the linear: it never copies the transformer to bfloat16 and never re-quantises. It floors the dynamic activation scale at `1e-12` itself — an all-zero activation row must not produce a zero scale (`docs/reference/upstream/`) — because torchao's `quantize_` was measured not to apply the configuration at all (section 12).
+
 ## 7. Defaults and named options
 
 Every option the system honours is named here. There is no hidden default anywhere.
@@ -304,7 +312,7 @@ Every option the system honours is named here. There is no hidden default anywhe
 | warm-up seed | 0 | `start` (value lives in `model/entry.yaml`, section 6.1) |
 | queue | unbounded FIFO; depth reported in `/health` | server |
 | stop grace | 30 s | `stop` |
-| steps | 12 | model entry |
+| steps | 12 | model entry — the default; a request may override it inside `limits.steps` |
 | guidance | 0.0 | model entry — distilled, no CFG branch |
 | limits.max_pixels | 921600 | model entry — the largest area rendered natively |
 | upscale | none: the native render | `generate`, when the request permits it and exceeds that ceiling |
@@ -332,7 +340,7 @@ Six steps, each built and exercised alone before the next begins.
 
 ## 10. The test matrix
 
-Twelve guards, each with the failure it catches.
+Fifteen guards, each with the failure it catches. Guard 13 is reserved by the web UI (P9) and is not written yet; the table carries the other fourteen.
 
 | # | Guard | Failure it catches |
 | --- | --- | --- |
@@ -348,6 +356,8 @@ Twelve guards, each with the failure it catches.
 | 10 | The upscale stage runs only when the request permits it and exceeds the native ceiling; when it runs, the response declares the base it started from and the stage's own cost, and the census stays the render's. | A stage that silently synthesizes pixels, or a response that lets a reader believe the model rendered them. |
 | 11 | The core imports nothing from the model stack: no `diffusers`, `transformers`, `safetensors`, `coltman_images.loader` or `coltman_images.fp8` is reachable from `server.py`, `entry.py` or `render.py`. | A core that must be edited for every new model, which is the coupling an adapter exists to remove. |
 | 12 | One instance, one card: with the state file deleted, `start` reports the running server instead of spawning a second; a hand-launched `python -m coltman_images.server` on another port is refused before it loads a weight; exactly one server process exists after each attempt. | A second process loading a second transformer onto a card that holds one, which is an out-of-memory crash rather than a slow request. |
+| 14 | Entry neutrality: an entry with arbitrary component names, no transformer config and no float8 census loads through `entry.py` and renders through a stub adapter; and no model-specific name survives in `coltman_images/entry.py`, checked on the parsed code rather than on prose. | A law only one model can satisfy, which turns a second model into surgery on the core. |
+| 15 | The step count is a request field bounded by the entry: a value outside `limits.steps` is refused before any adapter call, a value inside appears in the response, and an absent value means the entry's default. | A speed control enforced nowhere, or a request that silently renders at the default while the caller believes it chose. |
 
 ## 11. The cost model the system is built against
 
@@ -393,7 +403,7 @@ Every number in this document is either a measurement (section 11, plus one row 
 - The warm-up cost is not measured. Guard 3 measures it on the first run.
 - The stop grace (30 s) and the guard-3 ratio (1.25×) are decisions. The queue has no depth cap and there is no per-request ceiling: refusing a request, or cutting off a render, would contradict the on-demand requirement. `stop` is the abort.
 - FP8 is production and INT8 the declared fallback, by the operator's ruling of 2026-11-14. The quality adjudication against FP8 is recorded in section 11 and changes nothing until the operator rules otherwise.
-- `steps` is the only speed lever these measurements support, and the operator ruled on it on 2026-11-15 on a prompt built to stress the model's weak anatomy — five people around a table, hands and faces visible, one pouring a drink. The ladder behind that ruling is `docs/reference/steps-ladder.md`: nine values from 4 to 24 across five seeds, timed and compared. **The curve turns at 12–14 and the usable ceiling is 16.** Twelve is the minimum where the scene and its principal detail settle, and it stays the production default. Fourteen is the cut if the criterion is visible gain for each 15 % of extra time. From 16 upward there is no convergence to gain: 16→24 costs +49 % and SSIM stays flat at 0.885–0.900, falling in four of five seeds at 16→20. Eight to ten is the fast mode, acceptable with a reframing risk on some seeds. Below eight is not adopted: it is under the distilled design of the model and visibly dirty at 4–6. What the ladder does **not** establish is quality — SSIM measures change, not correctness, and the eight-category error count has not been scored. The cost of the whole range is linear at 3.9 s per step (section 11), so the control costs nothing to use: the same weights serve every step count and no swap is involved — a second entry that differs only in `steps` is a second file, not a second model.
+- `steps` is the only speed lever these measurements support, and the operator ruled on it on 2026-11-15 on a prompt built to stress the model's weak anatomy — five people around a table, hands and faces visible, one pouring a drink. The ladder behind that ruling is `docs/reference/steps-ladder.md`: nine values from 4 to 24 across five seeds, timed and compared. **The curve turns at 12–14 and the usable ceiling is 16.** Twelve is the minimum where the scene and its principal detail settle, and it stays the production default. Fourteen is the cut if the criterion is visible gain for each 15 % of extra time. From 16 upward there is no convergence to gain: 16→24 costs +49 % and SSIM stays flat at 0.885–0.900, falling in four of five seeds at 16→20. Eight to ten is the fast mode, acceptable with a reframing risk on some seeds. Below eight is not adopted: it is under the distilled design of the model and visibly dirty at 4–6. What the ladder does **not** establish is quality — SSIM measures change, not correctness, and the eight-category error count has not been scored. The cost of the whole range is linear at 3.9 s per step (section 11), so the control costs nothing to use: the same weights serve every step count, nothing swaps, and with `steps` as a request field a different step count needs no second entry at all. And the range is enforced rather than merely recorded — `limits.steps` bounds it, and a request outside it is refused at the door (guard 15).
 - The vendor card states that 9 inference steps produce 8 DiT forwards. **Measured on 2026-11-15 with a global module forward hook: this stack runs exactly as many transformer forwards as the step count demands — 8 steps give 8, 12 give 12.** The off-by-one is the vendor's own example's, not this pipeline's, and section 11 no longer needs correcting.
 - The production stack is the project's own `.venv` (Python 3.14.8, torch 2.13.0+cu130, CUDA 13.0), created from pinned requirements. torchao's `quantize_` was measured on 2026-11-15 to traverse the model and leave every `Linear` in bfloat16 — on torchao 0.17.0 and 0.18.0, on CPU and CUDA, with and without explicit `PerRow` granularity, on a two-layer toy and on the real transformer (census 0 / 521 / 0 / 521) — even though `Float8DynamicActivationFloat8WeightConfig` is present in `_QUANTIZE_CONFIG_HANDLER`. Why is unmeasured, and the loader does not depend on it. `torch._scaled_mm` was measured to work on this card (sm_89) with per-row scales: `scale_a` float32 `(M,1)`, `scale_b` float32 `(1,N)`, agreeing with the exact dequantized product to 2.5e-3 against a 4.8e-2 spread against plain bfloat16.
 

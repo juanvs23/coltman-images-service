@@ -1,4 +1,4 @@
-"""P6 — the eleven guards of protocol section 10, as an executable test matrix.
+"""P6 — the guards of protocol section 10, as an executable test matrix.
 
 Runs under the production interpreter and the declared command:
 
@@ -7,8 +7,9 @@ Runs under the production interpreter and the declared command:
 Two classes, because the matrix has two kinds of guard.
 
 `ContractCase` needs no service: it reads the tree (guard 8), asks a subprocess
-what the core imports (guard 11), and calls the census guard directly (the second
-half of guard 4). It costs seconds.
+what the core imports (guard 11), calls the census guard directly (the second
+half of guard 4), and writes a synthetic entry for a stub adapter, loads it and
+renders it in a child process (guard 14). It costs seconds.
 
 `ServiceCase` needs the live service, so it owns its lifecycle: one server, started
 once in `setUpClass` and stopped by the last test, which is guard 2's own
@@ -25,7 +26,8 @@ assertion. Every render it makes is listed here with the guard that owns it:
 That is eight stills. Guard 3 costs four by protocol; guard 9 costs two because
 concurrency cannot be borrowed; guard 10 costs one base render; the CLI still
 doubles as guard 7's second half. Nothing renders twice for the same guard and
-nothing here is a proxy for a render it did not make.
+nothing here is a proxy for a render it did not make. Guard 14 writes one more
+still, 256×256, and it is the stub's: no model is loaded for it.
 
 Ordering is explicit, not incidental: methods are numbered because unittest runs
 them alphabetically, and guard 3 has to see the first render after `start`.
@@ -449,6 +451,176 @@ def _classify_import(name: str) -> tuple[str, str]:
     return "outside", origin or str(locations)
 
 
+# --- guard 14: a model the law has never heard of ---------------------------
+#
+# The fixture is generated into the run's evidence folder, never into the tree
+# and never into /tmp: two component files with real bytes under names no model
+# owns, a synthetic entry that pins one of them by digest, and a stub adapter
+# whose only model is the contract itself.
+
+U1_EVIDENCE = ROOT / "tests" / "e2e" / "u1-entry-neutrality" / "evidence"
+U1_STUB = "u1stub"
+U1_PROMPT = "a thing that is not a lighthouse"
+U1_SEED = 11
+U1_SIDE = 256
+
+_NEUTRALITY_NAMES = ("transformer_config", "text_encoder", "vae", "scheduler_config", "float8")
+"""The names guard 14 forbids in `coltman_images/entry.py` (protocol section 6.1, 10).
+
+The law validates an envelope; these five are what Z-Image's identity was made
+of inside it. `float8` is included because a census key is the adapter's
+declaration, not the law's.
+"""
+
+
+def _u1_colour(prompt: str, seed: int) -> tuple[int, int, int]:
+    """The stub's pixel rule: the still is a function of the features and the seed."""
+    digest = hashlib.sha256(f"{prompt}|{seed}".encode("utf-8")).digest()
+    return digest[0], digest[1], digest[2]
+
+
+class _U1StubAdapter:
+    """A model that is only the contract: no weights, no stack, no assets.
+
+    Registered under `U1_STUB` for guard 14. It is deliberately not an adapter of
+    anything — that is the point: the core must serve it without being told what
+    it is. `instances` keeps the one `render.render` builds, so the guard can read
+    the calls the core actually made instead of trusting that it made them.
+    """
+
+    name = U1_STUB
+    instances: list[_U1StubAdapter] = []
+
+    def __init__(self, entry) -> None:
+        self.entry = entry
+        self.last_load_s = 0.0
+        self.seen: list[str] = []
+        type(self).instances.append(self)
+
+    def prepare(self) -> None:
+        self.seen.append("prepare")
+
+    def census(self) -> dict[str, int]:
+        self.seen.append("census")
+        return dict(self.entry.expected_census)
+
+    def encode(self, prompt: str) -> str:
+        self.seen.append(f"encode {prompt!r}")
+        return prompt
+
+    def denoise(self, features, width: int, height: int, seed: int):
+        from PIL import Image
+
+        self.seen.append(f"denoise {width}x{height} seed={seed}")
+        return Image.new("RGB", (width, height), _u1_colour(str(features), seed))
+
+    def close(self) -> None:
+        self.seen.append("close")
+
+
+def _u1_entry(digest: str) -> dict:
+    """The synthetic entry: arbitrary component names, no model-specific census."""
+    evidence = U1_EVIDENCE.relative_to(ROOT)
+    return {
+        "id": "u1-stub-model",
+        "adapter": U1_STUB,
+        "checkpoint": str(evidence / "thing_a.bin"),
+        "components": {
+            "thing_a": str(evidence / "thing_a.bin"),
+            "thing_b": str(evidence / "thing_b.json"),
+        },
+        "digests": {"thing_b": f"sha256:{digest}"},
+        "steps": 4,
+        "guidance": 1.5,
+        "limits": {"max_pixels": U1_SIDE * U1_SIDE},
+        "request_fields": ["prompt", "seed", "width", "height", "out"],
+        "expected_census": {"parameters": 2, "tensors": 3},
+        "defaults": {"width": U1_SIDE, "height": U1_SIDE, "format": "png"},
+        "warmup": {"width": U1_SIDE, "height": U1_SIDE, "prompt": "warm up", "seed": 0},
+    }
+
+
+def _u1_probe() -> dict:
+    """Load the synthetic entry and render through the stub. Runs in a child process.
+
+    The child is not decoration: `render.render` initialises a CUDA context, and
+    a context held by the test process would take memory from the card the later
+    guards need (the transformer alone measures 6057 MiB of 8188). Here it dies
+    with the child.
+    """
+    from coltman_images import adapter as adapter_module
+    from coltman_images.entry import load_entry
+    from coltman_images.render import render
+
+    entry = load_entry(U1_EVIDENCE / "entry.yaml")
+    adapter_module._REGISTRY[U1_STUB] = f"{__name__}:_U1StubAdapter"
+
+    # The wrapper's other half: a name the entry does not declare is a sentence.
+    missing = ""
+    try:
+        entry.components.thing_c
+    except AttributeError as exc:
+        missing = str(exc)
+
+    destination = U1_EVIDENCE / "stub-render.png"
+    destination.unlink(missing_ok=True)
+    response = render(
+        entry,
+        prompt=U1_PROMPT,
+        seed=U1_SEED,
+        width=U1_SIDE,
+        height=U1_SIDE,
+        out=str(destination),
+    )
+    calls = list(_U1StubAdapter.instances[-1].seen) if _U1StubAdapter.instances else []
+    return {
+        "entry_id": entry.id,
+        "adapter": entry.adapter,
+        "components": sorted(entry.components.paths),
+        "thing_a": str(entry.components.thing_a),
+        "census_declared": dict(entry.expected_census),
+        "missing_component_said": missing,
+        "calls": calls,
+        "response": response,
+    }
+
+
+def _code_names(path: pathlib.Path) -> list[dict[str, object]]:
+    """Every occurrence of a neutrality name in the code of `path`, from the AST.
+
+    The parsed code, not the prose: a comment is absent from an AST by
+    construction, and a docstring is a string constant that describes rather than
+    reaches (`_literal_strings` already excludes it, as guard 8 and 11 do). What
+    is scanned is what a coupling is made of — identifiers, attribute names,
+    argument and keyword names, definition names, imported names and the other
+    string constants.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    findings: list[dict[str, object]] = []
+
+    def scan(where: str, line: int, candidate: str) -> None:
+        for needle in _NEUTRALITY_NAMES:
+            if needle in candidate:
+                findings.append({"where": where, "line": line, "name": needle, "code": candidate})
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            scan("identifier", node.lineno, node.id)
+        elif isinstance(node, ast.Attribute):
+            scan("attribute", node.lineno, node.attr)
+        elif isinstance(node, ast.arg):
+            scan("argument", node.lineno, node.arg)
+        elif isinstance(node, ast.keyword) and node.arg:
+            scan("keyword", node.lineno, node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            scan("definition", node.lineno, node.name)
+        elif isinstance(node, ast.alias):
+            scan("import", node.lineno, node.name)
+    for line, text in _literal_strings(tree):
+        scan("string", line, text)
+    return findings
+
+
 class ContractCase(GuardCase):
     """Guards 4b, 8 and 11 — the ones a service would only slow down."""
 
@@ -600,6 +772,197 @@ class ContractCase(GuardCase):
             # Not vacuous: the module really was imported in that subprocess.
             self.assertTrue(result["loaded"], f"{name} was not in sys.modules after importing it")
             self.assertEqual(result["forbidden"], [], f"{name} reaches the model stack: {result['forbidden']}")
+
+    def test_guard14_entry_neutrality(self) -> None:
+        """Guard 14: an entry for a model this system does not have loads and renders.
+
+        Part (a) is behavioural. A synthetic entry is written to the run's evidence
+        folder: component names of its own choosing (`thing_a`, `thing_b`), no
+        transformer config, a census with none of Z-Image's keys, and an adapter
+        name registered for this test. If `entry.py` still carried a model's
+        schema, that entry would be refused before the stub was ever built — so
+        loading it and rendering one still through `render.render` is the proof
+        that the law's only subject is the envelope.
+
+        Part (b) is a source scan on the parsed code of `coltman_images/entry.py`,
+        asserting none of the five model-specific names survives there. The brief
+        said "a source scan"; scanning prose would forbid the *word* rather than
+        the coupling — a docstring cannot read a component — so the scan reads the
+        AST: identifiers, attribute names, argument and keyword names, definition
+        names, imported names and the string constants that are not docstrings.
+        It is not vacuous: the same scan is run over the Z-Image adapter, which
+        names all five, and must find all five.
+
+        It lives in `ContractCase` on purpose: it needs no service (it builds its
+        own entry and adapter), and it runs before any server exists, so a CUDA
+        context of its own — kept in a child process — cannot share the card with
+        the transformer the later guards load.
+        """
+        U1_EVIDENCE.mkdir(parents=True, exist_ok=True)
+        thing_a = U1_EVIDENCE / "thing_a.bin"
+        thing_b = U1_EVIDENCE / "thing_b.json"
+        thing_a.write_bytes(b"guard 14: a component that is not a checkpoint\n")
+        thing_b.write_bytes(b'{"guard": 14, "kind": "a second component"}\n')
+        digest = hashlib.sha256(thing_b.read_bytes()).hexdigest()
+        entry_file = U1_EVIDENCE / "entry.yaml"
+        entry_file.write_text(
+            yaml.safe_dump(_u1_entry(digest), sort_keys=False), encoding="utf-8"
+        )
+
+        code = (
+            "import json, sys; "
+            f"sys.path.insert(0, {str(ROOT / 'tests')!r}); "
+            "import test_p6_guards as g; "
+            "print('U1-PROBE ' + json.dumps(g._u1_probe()))"
+        )
+        began = time.perf_counter()
+        completed = subprocess.run(
+            [str(PYTHON), "-c", code],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        probe_wall = round(time.perf_counter() - began, 2)
+
+        probe: dict = {}
+        probe_error = ""
+        if completed.returncode != 0:
+            probe_error = f"the probe exited {completed.returncode}: {completed.stderr[-1500:]}"
+        else:
+            lines = [line for line in completed.stdout.splitlines() if line.startswith("U1-PROBE ")]
+            if not lines:
+                probe_error = f"the probe printed no result: {completed.stdout[-800:]}"
+            else:
+                probe = json.loads(lines[-1][len("U1-PROBE ") :])
+
+        entry_source = ROOT / "coltman_images" / "entry.py"
+        findings = _code_names(entry_source)
+        core_sources = [
+            entry_source,
+            ROOT / "coltman_images" / "render.py",
+            ROOT / "coltman_images" / "server.py",
+            ROOT / "coltman_images" / "adapter.py",
+        ]
+        core_findings = {
+            str(source.relative_to(ROOT)): _code_names(source) for source in core_sources
+        }
+        adapter_source = ROOT / "coltman_images" / "adapters" / "zimage.py"
+        adapter_findings = _code_names(adapter_source)
+        adapter_names = sorted({str(finding["name"]) for finding in adapter_findings})
+
+        _put(
+            "guard14",
+            {
+                "evidence": str(U1_EVIDENCE.relative_to(ROOT)),
+                "entry_file": str(entry_file.relative_to(ROOT)),
+                "probe_wall_s": probe_wall,
+                "probe_error": probe_error,
+                "probe": probe,
+                "neutrality": {
+                    "file": str(entry_source.relative_to(ROOT)),
+                    "findings": findings,
+                    "core_findings": core_findings,
+                    "control_file": str(adapter_source.relative_to(ROOT)),
+                    "control_names": adapter_names,
+                    "control_findings": adapter_findings[:20],
+                },
+            },
+        )
+
+        response = probe.get("response", {})
+        print(
+            f"guard 14a: entry {probe.get('entry_id')} (adapter {probe.get('adapter')!r}) loaded from "
+            f"{entry_file.relative_to(ROOT)} with components {probe.get('components')} and census "
+            f"{probe.get('census_declared')} in {probe_wall} s"
+        )
+        print(
+            f"guard 14a: rendered {response.get('width')}x{response.get('height')} through the stub → "
+            f"{response.get('out')} (model {response.get('model')!r}, seed {response.get('seed')})"
+        )
+        print(f"guard 14a: the core called the stub {probe.get('calls')}")
+        print(f"guard 14a: a name the entry does not declare → {probe.get('missing_component_said')!r}")
+        print(
+            f"guard 14b: {entry_source.relative_to(ROOT)} parsed — 0 of "
+            f"{len(_NEUTRALITY_NAMES)} model names in code; the same scan finds {adapter_names} "
+            f"in {adapter_source.name} ({len(adapter_findings)} occurrences)"
+        )
+
+        with self.subTest(part="14a: a synthetic entry loads and renders"):
+            self.assertEqual(probe_error, "", probe_error)
+            self.assertEqual(probe.get("entry_id"), "u1-stub-model")
+            self.assertEqual(probe.get("adapter"), U1_STUB)
+            self.assertEqual(probe.get("components"), ["thing_a", "thing_b"])
+            self.assertEqual(sorted(probe.get("census_declared", {})), ["parameters", "tensors"])
+            self.assertNotIn("float8", probe.get("census_declared", {}))
+            self.assertIn("thing_a", probe.get("thing_a", ""))
+
+            said = str(probe.get("missing_component_said", ""))
+            self.assertIn("thing_c", said, f"the wrapper did not name the missing component: {said}")
+            self.assertIn("thing_a", said, f"the wrapper did not list what the entry declares: {said}")
+
+            self.assertEqual(response.get("model"), "u1-stub-model")
+            self.assertEqual((response.get("width"), response.get("height")), (U1_SIDE, U1_SIDE))
+            self.assertEqual(response.get("seed"), U1_SEED)
+            self.assertEqual(response.get("census"), {"parameters": 2, "tensors": 3})
+            self.assertIsNone(response.get("upscale"), "the stub asked for the upscale stage")
+
+            self.assertEqual(
+                probe.get("calls"),
+                [
+                    "prepare",
+                    f"encode {U1_PROMPT!r}",
+                    f"denoise {U1_SIDE}x{U1_SIDE} seed={U1_SEED}",
+                    "census",
+                    "close",
+                ],
+                "the core did not drive the stub through its whole contract",
+            )
+
+            still = pathlib.Path(response.get("out", ""))
+            self.assertTrue(still.is_file(), f"{still} was not written")
+            self.assertEqual(_png_size(still), (U1_SIDE, U1_SIDE))
+
+            # The bytes are the stub's, not a real render's: the pixel is what the
+            # stub's own rule says it must be.
+            from PIL import Image
+
+            with Image.open(still) as image:
+                pixel = image.convert("RGB").getpixel((0, 0))
+            self.assertEqual(pixel, _u1_colour(U1_PROMPT, U1_SEED), "the still did not come from the stub")
+
+        with self.subTest(part="14b: the law names no model"):
+            self.assertEqual(
+                findings,
+                [],
+                "coltman_images/entry.py still knows a model: "
+                + "; ".join(f"{f['where']} {f['code']!r} at line {f['line']}" for f in findings),
+            )
+            # Not vacuous: the same scan, over the file that does the coupling.
+            self.assertEqual(
+                adapter_names,
+                sorted(_NEUTRALITY_NAMES),
+                f"the scan found {adapter_names} in {adapter_source.name}, not all five names",
+            )
+
+        print(
+            "guard 14c: the core names no model — "
+            + ", ".join(f"{name}: {len(entries)}" for name, entries in core_findings.items())
+        )
+
+        with self.subTest(part="14c: the core names no model either"):
+            # U1 found one: `server.py` built its warm-up log line from
+            # `census["float8"]` and three siblings, so a foreign census raised
+            # KeyError *after* the model loaded and boot reported exit 1. The
+            # line is fixed; this keeps it fixed, and holds the other core
+            # modules to the same rule the law states.
+            for name, entries in core_findings.items():
+                self.assertEqual(
+                    entries,
+                    [],
+                    f"{name} still knows a model: "
+                    + "; ".join(f"{f['where']} {f['code']!r} at line {f['line']}" for f in entries),
+                )
 
 
 # ===========================================================================

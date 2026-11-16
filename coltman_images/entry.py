@@ -4,6 +4,13 @@ This module is the only reader of `model/entry.yaml`. Nothing else in the
 system reads a path, a step count, a guidance value or a census from anywhere
 but the object this module returns (protocol section 9, rule 7).
 
+It validates the envelope and the shape, never the model. `components` is a map
+of names the entry chooses to paths that must exist; `digests` pins whichever of
+those files the entry wants pinned; `expected_census` is a map of names to
+counts whose meaning belongs to the adapter. Which names an adapter needs is the
+adapter's own declaration (protocol section 6.3) and this module never learns
+one of them.
+
 Asset paths are relative to the project root; an absolute path is allowed only
 when the asset lives outside the tree (protocol section 6.1).
 """
@@ -12,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import types
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,6 +33,8 @@ DEFAULT_ENTRY = PROJECT_ROOT / "model" / "entry.yaml"
 # subset it accepts; nothing outside this tuple is ever a valid field.
 VOCABULARY = ("prompt", "seed", "width", "height", "out", "upscale")
 
+# The envelope every entry carries. `digests` is the one optional field: an
+# entry pins the components it wants pinned and nothing forces it to pin one.
 _TOP_FIELDS = {
     "id",
     "adapter",
@@ -37,19 +48,10 @@ _TOP_FIELDS = {
     "defaults",
     "warmup",
 }
-_COMPONENT_FIELDS = {
-    "transformer_config",
-    "transformer_config_digest",
-    "vae",
-    "vae_config",
-    "text_encoder",
-    "text_encoder_dir",
-    "scheduler_config",
-}
+_OPTIONAL_TOP_FIELDS = frozenset({"digests"})
 _DEFAULT_FIELDS = {"width", "height", "format"}
 _LIMIT_FIELDS = {"max_pixels"}
 _WARMUP_FIELDS = {"width", "height", "prompt", "seed"}
-_CENSUS_FIELDS = {"float8", "plain", "other", "total"}
 
 
 class EntryError(Exception):
@@ -60,10 +62,12 @@ def _refuse(message: str) -> EntryError:
     return EntryError(message)
 
 
-def _exact_keys(name: str, given: Any, expected: set[str]) -> None:
+def _exact_keys(
+    name: str, given: Any, expected: set[str], optional: frozenset[str] = frozenset()
+) -> None:
     if not isinstance(given, dict):
         raise _refuse(f"{name}: expected a mapping, got {type(given).__name__}")
-    unknown = sorted(set(given) - expected)
+    unknown = sorted(set(given) - expected - optional)
     missing = sorted(expected - set(given))
     if unknown:
         raise _refuse(f"{name}: unknown field(s) {unknown}")
@@ -71,10 +75,16 @@ def _exact_keys(name: str, given: Any, expected: set[str]) -> None:
         raise _refuse(f"{name}: missing field(s) {missing}")
 
 
-def _resolve(path: Any) -> pathlib.Path:
+def _mapping(name: str, given: Any) -> dict:
+    if not isinstance(given, dict):
+        raise _refuse(f"{name}: expected a mapping, got {type(given).__name__}")
+    return given
+
+
+def _resolve(path: Any, where: str) -> pathlib.Path:
     """Relative paths resolve against the project root; absolute stand alone."""
     if not isinstance(path, str) or not path:
-        raise _refuse(f"path: expected a non-empty string, got {path!r}")
+        raise _refuse(f"{where}: expected a non-empty string, got {path!r}")
     p = pathlib.Path(path)
     return p if p.is_absolute() else PROJECT_ROOT / p
 
@@ -87,25 +97,29 @@ def _digest_of(path: pathlib.Path) -> str:
     return h.hexdigest()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Components:
-    transformer_config: pathlib.Path
-    transformer_config_digest: str
-    vae: pathlib.Path
-    vae_config: pathlib.Path
-    text_encoder: pathlib.Path
-    text_encoder_dir: pathlib.Path
-    scheduler_config: pathlib.Path
+    """The entry's components, under the entry's own names.
 
-    def assets(self) -> dict[str, pathlib.Path]:
-        return {
-            "transformer_config": self.transformer_config,
-            "vae": self.vae,
-            "vae_config": self.vae_config,
-            "text_encoder": self.text_encoder,
-            "text_encoder_dir": self.text_encoder_dir,
-            "scheduler_config": self.scheduler_config,
-        }
+    The law knows none of them. An adapter reaches the ones it needs by
+    attribute (`entry.components.<name>`), so a name the entry does not declare
+    raises `AttributeError` naming it, and the refusal arrives as a sentence
+    instead of a bare `KeyError`.
+    """
+
+    paths: Mapping[str, pathlib.Path]
+
+    def __getattr__(self, name: str) -> pathlib.Path:
+        try:
+            paths = object.__getattribute__(self, "paths")
+        except AttributeError:  # not constructed yet: do not recurse into this method
+            raise AttributeError(name) from None
+        if name in paths:
+            return paths[name]
+        raise AttributeError(
+            f"components: this entry declares no component named {name!r}; "
+            f"it declares {sorted(paths)}"
+        )
 
 
 @dataclass(frozen=True)
@@ -172,6 +186,53 @@ class Entry:
         )
 
 
+def _components(declared: Any) -> Components:
+    """`components`: free names, each a non-empty path. No name is known here."""
+    _mapping("components", declared)
+    paths: dict[str, pathlib.Path] = {}
+    for name, value in declared.items():
+        if not isinstance(name, str) or not name:
+            raise _refuse(f"components: expected component names, got {name!r}")
+        paths[name] = _resolve(value, f"components.{name}")
+    return Components(paths=types.MappingProxyType(paths))
+
+
+def _census(declared: Any) -> dict[str, int]:
+    """`expected_census`: names to non-negative integers. The meaning is the adapter's."""
+    _mapping("expected_census", declared)
+    census: dict[str, int] = {}
+    for key, value in declared.items():
+        if not isinstance(key, str) or not key:
+            raise _refuse(f"expected_census: expected string keys, got {key!r}")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise _refuse(f"expected_census.{key}: expected a non-negative integer")
+        census[key] = int(value)
+    return census
+
+
+def _verify_digests(declared: Any, components: Components) -> None:
+    """`digests`: optional. Every key names a component, every digest matches its file."""
+    if declared is None:
+        return
+    _mapping("digests", declared)
+    for name, digest in declared.items():
+        if name not in components.paths:
+            raise _refuse(
+                f"digests.{name}: no component by that name; the entry declares "
+                f"{sorted(components.paths)}"
+            )
+        if not isinstance(digest, str) or not digest.startswith("sha256:"):
+            raise _refuse(f"digests.{name}: expected sha256:<hex>, got {digest!r}")
+        asset = components.paths[name]
+        if not asset.is_file():
+            raise _refuse(f"digests.{name}: {asset} is not a file, so it has no digest")
+        actual = _digest_of(asset)
+        if digest != f"sha256:{actual}":
+            raise _refuse(
+                f"digests.{name}: mismatch — entry says {digest[7:19]}…, file is {actual[:12]}…"
+            )
+
+
 def load_entry(path: str | pathlib.Path | None = None) -> Entry:
     """Resolve and validate the entry. Raises EntryError on any defect."""
     source = pathlib.Path(path) if path is not None else DEFAULT_ENTRY
@@ -182,12 +243,10 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
     except yaml.YAMLError as exc:
         raise _refuse(f"{source}: not valid YAML: {exc}") from exc
 
-    _exact_keys("entry", raw, _TOP_FIELDS)
-    _exact_keys("components", raw["components"], _COMPONENT_FIELDS)
+    _exact_keys("entry", raw, _TOP_FIELDS, _OPTIONAL_TOP_FIELDS)
     _exact_keys("defaults", raw["defaults"], _DEFAULT_FIELDS)
     _exact_keys("limits", raw["limits"], _LIMIT_FIELDS)
     _exact_keys("warmup", raw["warmup"], _WARMUP_FIELDS)
-    _exact_keys("expected_census", raw["expected_census"], _CENSUS_FIELDS)
 
     entry_id = raw["id"]
     if not isinstance(entry_id, str) or not entry_id:
@@ -218,48 +277,15 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
     if "prompt" not in fields:
         raise _refuse("request_fields: prompt is required and must be accepted")
 
-    census = raw["expected_census"]
-    for key, value in census.items():
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise _refuse(f"expected_census.{key}: expected a non-negative integer")
-    if census["float8"] + census["plain"] + census["other"] != census["total"]:
-        raise _refuse(
-            "expected_census: float8 + plain + other must equal total "
-            f"({census['float8']} + {census['plain']} + {census['other']} != {census['total']})"
-        )
-    if census["float8"] == 0:
-        raise _refuse("expected_census.float8: a model with no Float8 weights cannot load as FP8")
+    components = _components(raw["components"])
+    checkpoint = _resolve(raw["checkpoint"], "checkpoint")
 
-    comp = raw["components"]
-    components = Components(
-        transformer_config=_resolve(comp["transformer_config"]),
-        transformer_config_digest=comp["transformer_config_digest"],
-        vae=_resolve(comp["vae"]),
-        vae_config=_resolve(comp["vae_config"]),
-        text_encoder=_resolve(comp["text_encoder"]),
-        text_encoder_dir=_resolve(comp["text_encoder_dir"]),
-        scheduler_config=_resolve(comp["scheduler_config"]),
-    )
-
-    checkpoint = _resolve(raw["checkpoint"])
-
-    declared = {"checkpoint": checkpoint, **components.assets()}
-    for name, asset in declared.items():
+    for name, asset in (("checkpoint", checkpoint), *components.paths.items()):
         if not asset.exists():
             raise _refuse(f"{name}: declared asset is missing: {asset}")
 
-    expected_digest = components.transformer_config_digest
-    if not isinstance(expected_digest, str) or not expected_digest.startswith("sha256:"):
-        raise _refuse(
-            "components.transformer_config_digest: expected sha256:<hex>, "
-            f"got {expected_digest!r}"
-        )
-    actual = _digest_of(components.transformer_config)
-    if expected_digest != f"sha256:{actual}":
-        raise _refuse(
-            "components.transformer_config_digest: mismatch — "
-            f"entry says {expected_digest[7:19]}…, file is {actual[:12]}…"
-        )
+    _verify_digests(raw.get("digests"), components)
+    census = _census(raw["expected_census"])
 
     return Entry(
         id=entry_id,
@@ -270,7 +296,7 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
         guidance=float(guidance),
         max_pixels=max_pixels,
         request_fields=tuple(fields),
-        expected_census=dict(census),
+        expected_census=census,
         defaults=dict(raw["defaults"]),
         warmup=dict(raw["warmup"]),
         source=source,

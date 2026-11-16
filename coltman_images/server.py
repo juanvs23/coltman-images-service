@@ -239,7 +239,7 @@ class WarmServer:
             elapsed,
             result["render_s"],
             result["load_s"],
-            " / ".join(str(result["census"][k]) for k in ("float8", "plain", "other", "total")),
+            json.dumps(result["census"], sort_keys=True),
         )
 
     # --- the queue ----------------------------------------------------------

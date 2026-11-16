@@ -72,9 +72,21 @@ def assert_census(observed: dict[str, int], entry: Entry) -> dict[str, int]:
 
     Two failures are reported separately: a model with no float8 weight at all,
     and a census that differs from the entry in any count.
+
+    A census handed in with a key missing counts that key as zero: a census is a
+    total, and these four are what this loader measures. A *declaration* with a
+    key missing has nothing to compare against, so it is refused here by name —
+    a `KeyError` escaping the guard would say nothing about the entry that caused
+    it.
     """
     observed = {key: int(observed.get(key, 0)) for key in CENSUS_KEYS}
-    expected = {key: int(entry.expected_census[key]) for key in CENSUS_KEYS}
+    try:
+        expected = {key: int(entry.expected_census[key]) for key in CENSUS_KEYS}
+    except KeyError as exc:
+        raise CensusError(
+            f"census: the entry declares no {exc.args[0]!r} count; this loader counts "
+            f"{list(CENSUS_KEYS)} and the entry declares {sorted(entry.expected_census)}"
+        ) from exc
     if observed["float8"] == 0:
         raise CensusError(
             "census: no Float8 weights in the loaded model — the load is a silent "
