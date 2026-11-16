@@ -10,6 +10,11 @@ Usage, against a server already started with `--ui`, from the project root:
 
     .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --quality SD
     .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --steps 16
+    .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --aspect "1:1"
+
+`--aspect` is handed to the page as the operator would; a shape the page does not
+offer comes back as the page's own refusal sentence, which this tool prints
+verbatim rather than inventing a list of its own.
 
 `--steps` defaults to the entry's own default and is checked against the entry's
 `limits.steps`, read here from `model/entry.yaml` — this tool is the operator's
@@ -25,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import time
 
 import yaml
@@ -47,13 +53,13 @@ def _flatten(value: object) -> object:
     return str(value)
 
 
-def drive(ui_port: int, prompt: str, seed: int | None, quality: str, steps: int) -> dict:
+def drive(ui_port: int, prompt: str, seed: int | None, quality: str, steps: int, aspect: str) -> dict:
     # `download_files=None`: the client returns where the page served the file
     # from instead of copying it into a temp folder of its own. The still the
     # server wrote is named in the result panel either way.
     client = Client(f"http://{BIND}:{ui_port}/", verbose=False, download_files=None)
     began = time.perf_counter()
-    job = client.submit(prompt, seed, quality, steps, api_name="/generate")
+    job = client.submit(prompt, seed, quality, steps, aspect, api_name="/generate")
     updates = []
     for update in job:
         updates.append({"after_s": round(time.perf_counter() - began, 2), "update": _flatten(update)})
@@ -63,6 +69,7 @@ def drive(ui_port: int, prompt: str, seed: int | None, quality: str, steps: int)
         "seed": seed,
         "quality": quality,
         "steps": steps,
+        "aspect": aspect,
         "updates": updates,
         "wall_s": round(time.perf_counter() - began, 2),
     }
@@ -81,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
         help="the slider's position; absent: the entry's own default, read from model/entry.yaml",
     )
     parser.add_argument(
+        "--aspect",
+        default="16:9",
+        metavar="W:H",
+        help='a shape the page offers ("16:9", "1:1", "4:3", "3:4", "9:16"); default "16:9"',
+    )
+    parser.add_argument(
         "--label",
         default=None,
         help="name the transcript after this instead of the quality (two runs at once need two names)",
@@ -93,10 +106,13 @@ def main(argv: list[str] | None = None) -> int:
     steps = int(declaration["steps"]) if args.steps is None else args.steps
     if not low <= steps <= high:
         parser.error(f"--steps {steps} is outside the entry's limits.steps {low}..{high}")
+    if not re.fullmatch(r"[0-9]+:[0-9]+", args.aspect):
+        parser.error(f'--aspect {args.aspect!r} is not a shape of the form "W:H"')
 
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    transcript = drive(args.ui_port, args.prompt, args.seed, args.quality, steps)
-    label = args.label or f"{args.quality.lower()}-steps{steps}"
+    transcript = drive(args.ui_port, args.prompt, args.seed, args.quality, steps, args.aspect)
+    shape = args.aspect.replace(":", "-")
+    label = args.label or f"{args.quality.lower()}-{shape}-steps{steps}"
     destination = EVIDENCE / f"{label}-transcript.json"
     destination.write_text(json.dumps(transcript, indent=2) + "\n", encoding="utf-8")
 

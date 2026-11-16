@@ -1103,23 +1103,23 @@ G13_APP_ATTRIBUTES = frozenset({"submit", "depth", "entry", "declaration"})
 outside the seam. The names are listed positively so a new attribute has to be
 declared here, in the law's vocabulary, before the page may use it."""
 
-G13_FORBIDDEN_SIZE_CONSTANTS = (1280, 720, 2560, 1440, 921600)
+G13_FORBIDDEN_SIZE_CONSTANTS = (720, 768, 960, 1024, 1280, 1440, 1536, 1920, 2560, 921600)
 """The entry's numbers, which the page must not carry (roadmap P9 step 4).
 
-`limits.max_pixels` and `defaults` are per-entry, so a size written into the UI
-is a size the next entry inherits wrongly. The scan is on the parsed code, with
-arithmetic folded (`640 * 2` is 1280), on integral floats (`1280.0`), and on the
-non-docstring strings (`"1280x720"`); docstrings are prose, and that is where the
-current entry's numbers may legitimately appear.
-"""
+`limits.max_pixels` and the boxes it permits are per-entry, so a size written into
+the UI is a size the next entry inherits wrongly — and with an aspect control the
+temptation is a table of ten. Every one of these is ≥ 256, so none can collide
+with the page's own small numbers (`precision=0`, `lines=2`, `step=1`,
+`height=540`, `STATUS_TICK_S = 0.5`, a column's `min_width`).
 
-G13_FORBIDDEN_STEP_CONSTANTS = (8, 12, 16)
-"""The entry's ladder, which the page must not carry either.
-
-`limits.steps` and the entry's own `steps` are per-entry, so a slider with 8..16
-baked in would refuse the next entry's range or offer one it refuses. These are
-scanned as **numbers only**: a step count in a string would be a label built from
-the entry, and this page has none.
+The scan is on the parsed code, with arithmetic folded (`640 * 2` is 1280), on
+integral floats (`1280.0`), and on the non-docstring strings (`"1280x720"`);
+docstrings are prose, and that is where the current entry's numbers may appear.
+The *step* ladder is not scanned as numbers: `16` is also the request's block
+unit (protocol section 4.1), which `size_for` needs to put a box on the grid, so
+the integer scan would refuse a legitimate literal. The ladder's provenance is
+proved by the positive check instead — the page must read `steps_min`, `steps_max`
+and `steps` from the entry — and that check cannot collide with anything.
 """
 
 
@@ -2351,7 +2351,6 @@ class ServiceCase(GuardCase):
 
         numbers = _ui_numbers(tree)
         size_numbers = _ui_matching(numbers, G13_FORBIDDEN_SIZE_CONSTANTS)
-        step_numbers = _ui_matching(numbers, G13_FORBIDDEN_STEP_CONSTANTS)
         size_strings = _ui_string_size_literals(tree, G13_FORBIDDEN_SIZE_CONSTANTS)
 
         # 2. Unit — the switch, on a synthetic entry and on the real declaration.
@@ -2373,10 +2372,19 @@ class ServiceCase(GuardCase):
         )
         factor = 2
         stub_prompt = "a thing that is not a lighthouse"
-        stub_sd = ui_module.request_from_form(stub_prompt, 11, False, stub.steps, stub, factor)
-        stub_hd = ui_module.request_from_form(stub_prompt, 11, True, stub.steps, stub, factor)
-        stub_absent_seed = ui_module.request_from_form(stub_prompt, None, False, stub.steps, stub, factor)
-        stub_steps = ui_module.request_from_form(stub_prompt, 11, False, stub.steps_min, stub, factor)
+        stub_aspect = "1:1"
+        stub_sd = ui_module.request_from_form(
+            stub_prompt, 11, False, stub.steps, stub_aspect, stub, factor
+        )
+        stub_hd = ui_module.request_from_form(
+            stub_prompt, 11, True, stub.steps, stub_aspect, stub, factor
+        )
+        stub_absent_seed = ui_module.request_from_form(
+            stub_prompt, None, False, stub.steps, stub_aspect, stub, factor
+        )
+        stub_steps = ui_module.request_from_form(
+            stub_prompt, 11, False, stub.steps_min, stub_aspect, stub, factor
+        )
 
         # The real numbers, read as a declaration rather than resolved: a full
         # `load_entry` would hash 6.29 GB for a fact this guard only needs to
@@ -2391,13 +2399,37 @@ class ServiceCase(GuardCase):
             steps_max=int(declaration["limits"]["steps"]["max"]),
         )
         real_factor = int(stage["scale"])
-        real_hd = ui_module.request_from_form("a lighthouse at dusk", 7, True, real.steps, real, real_factor)
+        real_hd = ui_module.request_from_form(
+            "a lighthouse at dusk", 7, True, real.steps, "16:9", real, real_factor
+        )
         real_default = ui_module.request_from_form(
-            "a lighthouse at dusk", 7, False, real.steps, real, real_factor
+            "a lighthouse at dusk", 7, False, real.steps, "16:9", real, real_factor
         )
         real_low = ui_module.request_from_form(
-            "a lighthouse at dusk", 7, False, real.steps_min, real, real_factor
+            "a lighthouse at dusk", 7, False, real.steps_min, "16:9", real, real_factor
         )
+
+        # The five shapes, each at both halves of the switch, computed. The
+        # expectations are this entry's measured sizes: `16:9`, `1:1` and `9:16`
+        # sit exactly on the ceiling and on the stage's reach, and `4:3`/`3:4` are
+        # the pair that cannot — their next step up is 1152x864, 73,728 px over
+        # `max_pixels`, so they stop one step lower and the algorithm must shrink
+        # rather than force the area. A different entry or factor moves every one
+        # of these, which is why they are computed here and not carried in ui.py.
+        shapes = {
+            "16:9": ((1280, 720), (2560, 1440)),
+            "1:1": ((960, 960), (1920, 1920)),
+            "4:3": ((1088, 816), (2176, 1632)),
+            "3:4": ((816, 1088), (1632, 2176)),
+            "9:16": ((720, 1280), (1440, 2560)),
+        }
+        computed = {
+            shape: (
+                ui_module.size_for(real, shape, 1),
+                ui_module.size_for(real, shape, real_factor),
+            )
+            for shape in ui_module.ASPECT_PRESETS
+        }
 
         # The status line carries the queue depth while it waits — the roadmap's
         # "a 46 s request behind another one must not look like a hang" — and a
@@ -2444,13 +2476,13 @@ class ServiceCase(GuardCase):
                 }
 
         waiting = _Waiting()
-        updates = list(ui_module.generate(waiting, "a thing", 11, False, waiting.entry.steps))
+        updates = list(ui_module.generate(waiting, "a thing", 11, False, waiting.entry.steps, "1:1"))
         statuses = [update for update in updates if isinstance(update, str)]
         failures: dict[str, list] = {}
         for error_class in (InvalidRequest, RenderFailed, ServerError):
             waiting.error = error_class("the seam said so")
             failures[error_class.__name__] = list(
-                ui_module.generate(waiting, "a thing", 11, False, waiting.entry.steps)
+                ui_module.generate(waiting, "a thing", 11, False, waiting.entry.steps, "1:1")
             )
         waiting.error = None
 
@@ -2466,7 +2498,6 @@ class ServiceCase(GuardCase):
                     "entry_attributes": sorted(entry_attributes),
                     "numbers": numbers,
                     "size_numbers": size_numbers,
-                    "step_numbers": step_numbers,
                     "size_strings": size_strings,
                     "control_file": str(adapter_source.relative_to(ROOT)),
                     "control_forbidden": adapter_forbidden,
@@ -2479,6 +2510,13 @@ class ServiceCase(GuardCase):
                         "steps": stub_steps,
                         "factor": factor,
                         "ladder": [stub.steps_min, stub.steps_max, stub.steps],
+                    },
+                    "shapes": {
+                        "presets": list(ui_module.ASPECT_PRESETS),
+                        "expected": shapes,
+                        "computed": {shape: [list(sd), list(hd)] for shape, (sd, hd) in computed.items()},
+                        "ceiling": real.max_pixels,
+                        "cap": real.max_pixels * real_factor * real_factor,
                     },
                     "real": {
                         "defaults": real.defaults,
@@ -2502,8 +2540,7 @@ class ServiceCase(GuardCase):
             f"guard 13: {ui_source.name} parsed — {len(imports)} imports, "
             f"{len(forbidden)} reaching the model stack; calls submit() = {calls_submit}; "
             f"app attributes {sorted(app_attributes)}; entry attributes {sorted(entry_attributes)}; "
-            f"{len(size_numbers)} entry sizes, {len(step_numbers)} ladder numbers and "
-            f"{len(size_strings)} size strings written in code"
+            f"{len(size_numbers)} entry sizes and {len(size_strings)} size strings written in code"
         )
         print(f"guard 13: every numeric literal in {ui_source.name}: {numbers}")
         print(
@@ -2526,6 +2563,14 @@ class ServiceCase(GuardCase):
             f"a default-position request carries steps={real_default.get('steps')!r} and a "
             f"{real.steps_min}-step one carries steps={real_low.get('steps')!r}"
         )
+        for shape, (sd, hd) in computed.items():
+            expected_sd, expected_hd = shapes[shape]
+            mark = "" if (sd, hd) == (expected_sd, expected_hd) else "  ← differs from the expectation"
+            print(
+                f"guard 13: {shape:>5} → SD {sd[0]}x{sd[1]} ({sd[0] * sd[1]} px, ceiling "
+                f"{real.max_pixels}) · HD {hd[0]}x{hd[1]} ({hd[0] * hd[1]} px, cap "
+                f"{real.max_pixels * real_factor * real_factor}){mark}"
+            )
         print(f"guard 13: while one request waits the status says {waiting_status!r}")
         for name, values in failures.items():
             last = values[-1] if values else "(nothing)"
@@ -2564,11 +2609,6 @@ class ServiceCase(GuardCase):
                 [],
                 f"{ui_source.name} writes the entry's sizes into a string: {size_strings}",
             )
-            self.assertEqual(
-                step_numbers,
-                [],
-                f"{ui_source.name} writes the entry's step ladder into the page: {step_numbers}",
-            )
 
         with self.subTest(part="13a: the ladder comes from the entry"):
             missing = sorted({"steps_min", "steps_max", "steps"} - entry_attributes)
@@ -2580,8 +2620,19 @@ class ServiceCase(GuardCase):
             )
 
         with self.subTest(part="13b: the switch maps to the entry"):
-            self.assertEqual(stub_sd["width"], stub.defaults["width"])
-            self.assertEqual(stub_sd["height"], stub.defaults["height"])
+            # SD is the shape's box at factor 1, not the entry's defaults: the
+            # aspect decides the shape and the ceiling decides the size, so a
+            # square request on an entry defaulting to 16:9 is a square.
+            self.assertEqual(
+                (stub_sd["width"], stub_sd["height"]),
+                ui_module.size_for(stub, "1:1", 1),
+                "SD is not the largest square inside the stub's ceiling",
+            )
+            self.assertNotEqual(
+                (stub_sd["width"], stub_sd["height"]),
+                (stub.defaults["width"], stub.defaults["height"]),
+                "the fixture cannot tell a computed box from the entry's defaults",
+            )
             self.assertNotIn("upscale", stub_sd, "SD asked for the stage")
             self.assertIn("seed", stub_sd)
             self.assertNotIn("seed", stub_absent_seed, "an absent seed must let the server pick one")
@@ -2638,6 +2689,57 @@ class ServiceCase(GuardCase):
                 self.assertEqual(request["height"] % 16, 0, f"{label}: HD height is not a multiple of 16")
                 self.assertGreaterEqual(request["width"], 256, f"{label}: HD width is below 256")
                 self.assertGreaterEqual(request["height"], 256, f"{label}: HD height is below 256")
+
+        with self.subTest(part="13b: the five shapes, both halves"):
+            self.assertEqual(
+                tuple(ui_module.ASPECT_PRESETS),
+                ("16:9", "1:1", "4:3", "3:4", "9:16"),
+                "the page offers a different list of shapes than the operator asked for",
+            )
+            for shape in ui_module.ASPECT_PRESETS:
+                across, down = (int(side) for side in shape.split(":"))
+                sd, hd = computed[shape]
+                expected_sd, expected_hd = shapes[shape]
+                self.assertEqual(
+                    (sd, hd),
+                    (expected_sd, expected_hd),
+                    f"{shape}: the page computes {sd} at SD and {hd} at HD, not "
+                    f"{expected_sd} and {expected_hd} — it shrank less or more than the ceiling allows",
+                )
+                for label, box, cap in (
+                    ("SD", sd, real.max_pixels),
+                    ("HD", hd, real.max_pixels * real_factor * real_factor),
+                ):
+                    self.assertEqual(box[0] % 16, 0, f"{shape} {label}: {box[0]} is not a multiple of 16")
+                    self.assertEqual(box[1] % 16, 0, f"{shape} {label}: {box[1]} is not a multiple of 16")
+                    self.assertGreaterEqual(box[0], 256, f"{shape} {label}: {box[0]} is below 256")
+                    self.assertGreaterEqual(box[1], 256, f"{shape} {label}: {box[1]} is below 256")
+                    self.assertLessEqual(
+                        box[0] * box[1], cap, f"{shape} {label}: {box[0]}x{box[1]} is above {cap} px"
+                    )
+                    self.assertEqual(
+                        box[0] * down,
+                        box[1] * across,
+                        f"{shape} {label}: {box[0]}x{box[1]} is not the shape asked for",
+                    )
+                self.assertLessEqual(
+                    sd[0] * sd[1], real.max_pixels, f"{shape}: SD is above the entry's ceiling"
+                )
+                self.assertGreater(
+                    hd[0] * hd[1],
+                    real.max_pixels,
+                    f"{shape}: HD {hd[0]}x{hd[1]} does not clear the ceiling, so the stage would not run "
+                    "and the page would say SD",
+                )
+            # 16:9 at SD is the shape the entry itself renders by default, so the
+            # recorded baseline's request is unchanged by this control.
+            self.assertEqual(
+                computed["16:9"][0],
+                (int(real.defaults["width"]), int(real.defaults["height"])),
+                "16:9 at SD is not the entry's own default box, so the baseline would move",
+            )
+            with self.assertRaises(ValueError):
+                ui_module.size_for(real, "5:4", 1)
 
         with self.subTest(part="13c: the status line and the failures"):
             # The generator's halves, with no gradio and no card: it reports the
@@ -2708,13 +2810,17 @@ class ServiceCase(GuardCase):
         # `app._queue` behind its back, which is the failure this half exists to
         # catch; these two enter where a browser enters. They also carry two
         # different ladder positions — A at the entry's default, B at its ceiling —
-        # so the control is proved end to end: A's field is omitted and the
-        # response reports the entry's default, B's value reaches the render, and
-        # the slower second render keeps the serialisation signal wide.
+        # and two different shapes — A the one the entry renders by default, B a
+        # square, which is not the entry's own — so both new controls are proved
+        # end to end: A omits `steps` and lands on the baseline's box, B's value and
+        # shape reach the render, and the slower second render keeps the
+        # serialisation signal wide.
         from gradio_client import Client
 
         seeds = {"A": 71, "B": 72}
         steps = {"A": real.steps, "B": real.steps_max}
+        aspects = {"A": "16:9", "B": "1:1"}
+        expected_boxes = {label: ui_module.size_for(real, aspects[label], 1) for label in aspects}
         barrier = threading.Barrier(2)
         results: dict[str, dict] = {}
         depths: list[int] = []
@@ -2732,6 +2838,7 @@ class ServiceCase(GuardCase):
                 seeds[label],
                 "SD",
                 steps[label],
+                aspects[label],
                 api_name="/generate",
             )
             for update in job:
@@ -2770,6 +2877,8 @@ class ServiceCase(GuardCase):
             "guard13.behaviour",
             {
                 "seeds": seeds,
+                "aspects": aspects,
+                "boxes": {label: list(box) for label, box in expected_boxes.items()},
                 "results": results,
                 "peak_queue_depth": peak,
                 "depth_samples": len(depths),
@@ -2784,8 +2893,8 @@ class ServiceCase(GuardCase):
         )
 
         self.assertEqual(sorted(results), ["A", "B"], "a concurrent page submission never returned")
-        expected = (int(real.defaults["width"]), int(real.defaults["height"]))
         for label, result in results.items():
+            expected = expected_boxes[label]
             self.assertIn(
                 f"**SD** — {expected[0]}x{expected[1]}",
                 result["panel"],
@@ -2805,7 +2914,8 @@ class ServiceCase(GuardCase):
             self.assertEqual(
                 _png_size(written),
                 expected,
-                f"{written} is not the size the entry's defaults declare ({expected[0]}x{expected[1]})",
+                f"{written} is not the {aspects[label]} box the entry permits "
+                f"({expected[0]}x{expected[1]})",
             )
             # The page does not queue in front of the seam: both submissions were
             # being reported on within seconds of the click, not after the other

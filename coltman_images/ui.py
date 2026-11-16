@@ -35,6 +35,7 @@ replacing `build` and nothing else (protocol section 5.5).
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Any, Iterator
@@ -58,50 +59,69 @@ which one was delivered."""
 
 HD_LABEL = "HD"
 
+ASPECT_PRESETS = ("16:9", "1:1", "4:3", "3:4", "9:16")
+"""The shapes the page offers, in the operator's order, as text.
 
-def _hd_size(entry: Any, factor: int) -> tuple[int, int]:
-    """The largest box of the entry's aspect that the declared stage can serve.
+Text and not numbers: a preset's digits are a label, and a size is never carried
+here — `size_for` computes it from the entry's ceiling and the stage's factor, so
+a different entry or a different stage changes every one of them without a line
+of this module."""
 
-    The stage's reach is `max_pixels x factor²` (section 6.2), so HD is the
-    biggest whole multiple of the entry's own box inside that reach — the base it
-    will be enlarged from keeps the entry's shape, and a multiple of a valid size
-    is a valid size (protocol section 4.1's block rule is preserved by it). Derived
-    from the ceiling, never from the defaults times the factor: those only clear
-    the ceiling while the defaults sit at it, and a future entry with smaller
-    defaults would get a native render labelled HD.
+
+def _ratio(aspect: str) -> tuple[int, int]:
+    """`"16:9"` → `(16, 9)`, reduced. A shape the page does not offer is refused."""
+    if aspect not in ASPECT_PRESETS:
+        raise ValueError(f"aspect: {aspect!r} is not one of the offered shapes {ASPECT_PRESETS}")
+    across, down = aspect.split(":")
+    left, right = int(across), int(down)
+    common = math.gcd(left, right)
+    return left // common, right // common
+
+
+def size_for(entry: Any, aspect: str, factor: int) -> tuple[int, int]:
+    """The largest box at `aspect` this entry can serve at `factor`.
+
+    One rule for both halves of the switch: SD is `factor=1`, HD is the stage's
+    declared factor, and the ceiling is `max_pixels x factor²` (section 6.2). The
+    box is the largest whose area fits that ceiling, whose sides are both
+    multiples of the request's block (section 4.1) and at least 256, and whose
+    ratio is exactly `aspect`.
+
+    It shrinks to the largest that fits and never forces the area: at 4:3 the
+    next step up is over the ceiling by 73,728 px, so 4:3 stops lower than the
+    other shapes — which is the whole reason the page offers a list of shapes
+    instead of two free fields. A size is never carried in this module: the entry
+    and the stage are the only inputs.
     """
-    width = int(entry.defaults["width"])
-    height = int(entry.defaults["height"])
+    across, down = _ratio(aspect)
     cap = int(entry.max_pixels) * int(factor) * int(factor)
-
-    best: tuple[int, int] | None = None
-    multiple = 2
-    while width * multiple * height * multiple <= cap:
-        best = (width * multiple, height * multiple)
-        multiple += 1
-    if best is None:
+    block = 16
+    # The smallest step that keeps *both* sides on the block grid, so the box's
+    # ratio survives the grid instead of being rounded away from it.
+    step = math.lcm(block // math.gcd(across, block), block // math.gcd(down, block))
+    scale = math.isqrt(cap // (across * down))
+    scale -= scale % step
+    while scale > 0 and (
+        across * scale < 256 or down * scale < 256 or across * scale * down * scale > cap
+    ):
+        scale -= step
+    if scale <= 0:
         raise ValueError(
-            f"HD: the {width}x{height} defaults doubled are already above the {cap} px the stage can serve"
+            f"size: no {aspect} box with sides on the {block} grid fits the {cap} px a factor of "
+            f"{factor} offers"
         )
-    if best[0] * best[1] <= int(entry.max_pixels):
-        raise ValueError(
-            f"HD: the largest box inside the stage's {cap} px reach is {best[0]}x{best[1]}, "
-            f"which does not clear the entry's {entry.max_pixels} px ceiling"
-        )
-    return best
+    return across * scale, down * scale
 
 
 def request_from_form(
-    prompt: str, seed: Any, hd: bool, steps: Any, entry: Any, factor: int
+    prompt: str, seed: Any, hd: bool, steps: Any, aspect: str, entry: Any, factor: int
 ) -> dict[str, Any]:
     """The protocol section 4.1 request this form describes. Pure — no I/O.
 
-    `hd` is the switch: False asks for the entry's own defaults and no
-    permission, True asks for a size above the entry's ceiling and sets
-    `upscale: true`, which is the only way the declared stage may run (section
-    6.2). The HD size is derived from the entry's ceiling and aspect by
-    `_hd_size`, so it is above that ceiling by construction and inside what the
-    stage can serve; the switch carries no size of its own.
+    `hd` is the switch: False asks for the shape's largest box under the entry's
+    ceiling, True for its largest inside what the declared stage can serve, with
+    `upscale: true` — the only way that stage may run (section 6.2). Both come
+    from `size_for`, so the page carries no size of its own.
 
     `steps` is the ladder's position. A value equal to the entry's own default is
     **omitted**, because absent means the entry's steps (section 4.1): the page
@@ -116,22 +136,19 @@ def request_from_form(
     it would be changing the request behind the operator's back.
 
     `entry` is the resolved entry and `factor` its stage's declared scale; both
-    are arguments rather than module constants because `limits.max_pixels`, the
-    defaults and `limits.steps` belong to the entry (roadmap P9 step 4).
+    are arguments rather than module constants because `limits.max_pixels` and
+    `limits.steps` belong to the entry (roadmap P9 step 4).
     """
     request: dict[str, Any] = {"prompt": str(prompt)}
     if seed is not None:
         request["seed"] = seed
     if steps is not None and steps != entry.steps:
         request["steps"] = steps
+    width, height = size_for(entry, aspect, int(factor) if hd else 1)
+    request["width"] = width
+    request["height"] = height
     if hd:
-        width, height = _hd_size(entry, int(factor))
-        request["width"] = width
-        request["height"] = height
         request["upscale"] = True
-    else:
-        request["width"] = int(entry.defaults["width"])
-        request["height"] = int(entry.defaults["height"])
     return request
 
 
@@ -145,7 +162,7 @@ def render(app: Any, request: dict[str, Any]) -> dict[str, Any]:
     return app.submit(request)
 
 
-def generate(app: Any, prompt: str, seed: Any, hd: bool, steps: Any) -> Iterator[Any]:
+def generate(app: Any, prompt: str, seed: Any, hd: bool, steps: Any, aspect: str) -> Iterator[Any]:
     """Submit one request and report while it waits: status strings, then the response.
 
     `submit()` blocks until the still exists — ~46 s at 1280x720, and longer
@@ -168,7 +185,7 @@ def generate(app: Any, prompt: str, seed: Any, hd: bool, steps: Any) -> Iterator
         raise RuntimeError("generate: HD needs the stage's declaration, and none is loaded")
     try:
         request = request_from_form(
-            prompt, seed, hd, steps, entry, int(declaration.scale) if hd else 1
+            prompt, seed, hd, steps, aspect, entry, int(declaration.scale) if hd else 1
         )
     except ValueError as exc:
         yield f"the page could not build that request — {exc}"
@@ -262,16 +279,18 @@ def build(app: Any) -> gr.Blocks:
         return "\n".join(lines)
 
     def _submit(
-        prompt: str, seed: Any, quality: str, steps: Any
+        prompt: str, seed: Any, quality: str, steps: Any, aspect: str
     ) -> Iterator[tuple[Any, ...]]:
         """Drive `generate` and hand its yields to the three outputs.
 
         `seed` is passed on as the component gives it — `gr.Number` with
-        `precision=0` hands an integer or nothing — and `steps` as the slider
-        hands it, which is an integer because the slider's `precision` is 0. The
-        server owns the rules about both.
+        `precision=0` hands an integer or nothing — `steps` as the slider hands
+        it, which is an integer because the slider's `precision` is 0, and
+        `aspect` as the operator's label. The server owns the rules about all
+        three, and the size is computed from the entry and the stage, never
+        taken from the form.
         """
-        for update in generate(app, prompt, seed, quality == HD_LABEL, steps):
+        for update in generate(app, prompt, seed, quality == HD_LABEL, steps, aspect):
             if isinstance(update, dict):
                 yield f"done — {update.get('out')}", update.get("out"), _describe(update)
             else:
@@ -296,6 +315,12 @@ def build(app: Any) -> gr.Blocks:
                         value=SD_LABEL,
                         label="size",
                     )
+                aspect = gr.Radio(
+                    choices=list(ASPECT_PRESETS),
+                    value=ASPECT_PRESETS[0],
+                    label="aspect",
+                    info="the largest box at that shape, from the entry's ceiling",
+                )
                 steps = gr.Slider(
                     minimum=int(entry.steps_min),
                     maximum=int(entry.steps_max),
@@ -315,7 +340,7 @@ def build(app: Any) -> gr.Blocks:
                 details = gr.Markdown("")
         submit.click(
             _submit,
-            inputs=[prompt, seed, quality, steps],
+            inputs=[prompt, seed, quality, steps, aspect],
             outputs=[status, still, details],
             api_name="generate",
         )

@@ -125,11 +125,28 @@ coltman-images start --ui --ui-port 8000     # somewhere else
 
 `start` echoes the address on its success line. The page is two equal halves: the
 form on the left, the still and its details on the right. The form has a prompt, a
-seed (leave it empty and the server picks one and reports it), a size switch and a
-**steps** slider — its range and its starting position are the entry's own
-`limits.steps` and `steps`, so the page asks the system what it may serve instead
-of carrying a ladder. The status line sits at the top of the right half, where you
-are looking while a request runs.
+seed (leave it empty and the server picks one and reports it), a size switch, an
+**aspect** choice and a **steps** slider. The shape decides the box and the entry
+decides how big it may be, so neither the slider nor the shapes carry a size: the
+steps range and its starting position are the entry's `limits.steps` and `steps`,
+and every box is the largest at that shape inside the entry's ceiling (or, for HD,
+inside what the declared stage can serve). The status line sits at the top of the
+right half, where you are looking while a request runs.
+
+The five shapes, and what each gives on this entry:
+
+| Shape | SD | HD |
+| --- | --- | --- |
+| `16:9` | 1280×720 | 2560×1440 |
+| `1:1` | 960×960 | 1920×1920 |
+| `4:3` | 1088×816 | 2176×1632 |
+| `3:4` | 816×1088 | 1632×2176 |
+| `9:16` | 720×1280 | 1440×2560 |
+
+`16:9`, `1:1` and `9:16` reach the ceiling exactly. `4:3` cannot: its next step up
+with both sides on the 16 grid is 1152×864, 73,728 px over `max_pixels`, so it
+stops one step lower — which is the reason the page offers a list of shapes rather
+than two free width/height fields, where you could ask for a size the card refuses.
 
 It is a third door onto the same implementation, not a second renderer: it calls
 the same `submit()` the API calls, so two tabs serialise instead of loading two
@@ -141,6 +158,7 @@ What the page says, and what each line means:
 | --- | --- |
 | **SD** | the native render — `upscale: null`; nothing was synthesized |
 | **HD** | a delivered size above the native ceiling, and the line names the base it started from (`upscale.from`) |
+| aspect | the shape; the box is computed from it, the entry's `limits.max_pixels` and the stage's factor |
 | `steps` (form) | the entry's ladder: its range and its default come from `limits.steps`, and a position at the default is sent as no `steps` field at all |
 | `steps N` (panel) | the count the still was actually rendered with, from the response — not the slider's position |
 | the census | parameter counts exactly as the entry's adapter declares the keys |

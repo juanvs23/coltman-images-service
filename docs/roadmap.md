@@ -112,10 +112,12 @@ cannot read a filesystem path — and the eight steps below are all in code, wit
 3. **`coltman_images/ui.py`.** **Done, and it is four things and nothing else**: `request_from_form` (pure, no I/O),
    `render` (one line into the seam), `generate` (a **generator**: the submission runs in a worker thread and a status
    string is yielded every 0.5 s until the response object arrives), and `build` (the page). The page is two equal columns
-   — prompt, seed, the SD/HD switch, a **steps** slider whose range and initial position are the entry's `limits.steps`
-   and `steps`, and the button on the left; the status line, the still and its details on the right. The module imports
-   gradio and nothing model-bearing, and gradio is imported inside the server's `--ui` branch and never at module scope —
-   measured: `import coltman_images.server` leaves `gradio` out of `sys.modules`.
+   — prompt, seed, the SD/HD switch, an **aspect** choice of five shapes (`16:9`, `1:1`, `4:3`, `3:4`, `9:16`), a
+   **steps** slider whose range and initial position are the entry's `limits.steps` and `steps`, and the button on the
+   left; the status line, the still and its details on the right. Every size is computed from the entry's ceiling and the
+   stage's factor — nothing is carried in the page. The module imports gradio and nothing model-bearing, and gradio is
+   imported inside the server's `--ui` branch and never at module scope — measured: `import coltman_images.server`
+   leaves `gradio` out of `sys.modules`.
 4. **The honest copy.** **Done, and both constraints survived.** SD is `upscale: null` and HD is an `upscale` object that
    names `from`; the census is rendered key by key exactly as the response declares it; `render_s`, `load_s` and
    `duration_s` are three separate lines; and the server's queue depth is on screen while a request waits — measured with

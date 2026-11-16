@@ -85,6 +85,14 @@ def main() -> int:
             )
             for key in ("minimum", "maximum", "step", "value", "precision", "label", "info")
         },
+        "aspect": {
+            key: next(
+                component["props"].get(key)
+                for component in page.config["components"]
+                if component["type"] == "radio" and component["props"].get("label") == "aspect"
+            )
+            for key in ("choices", "value", "label")
+        },
     }
     print(json.dumps(tree, indent=2))
 
@@ -95,6 +103,11 @@ def main() -> int:
         problems.append("the columns are not both scale=1")
     if leaves["result"] != ["markdown", "image", "markdown"]:
         problems.append(f"the result half is {leaves['result']}, not status/still/details")
+    shapes = [choice[0] for choice in (tree["aspect"]["choices"] or [])]
+    if shapes != ["16:9", "1:1", "4:3", "3:4", "9:16"]:
+        problems.append(f"the aspect control offers {shapes}, not the operator's five")
+    if tree["aspect"]["value"] != "16:9":
+        problems.append(f"the aspect control starts at {tree['aspect']['value']!r}, not 16:9")
     slider = tree["steps"]
     if (slider["minimum"], slider["maximum"], slider["value"]) != (
         entry.steps_min,
