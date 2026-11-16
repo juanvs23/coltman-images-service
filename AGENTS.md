@@ -28,6 +28,7 @@ All commands below are built and exercised by the test matrix.
 | Command | Purpose | State |
 | --- | --- | --- |
 | `coltman-images start` | power on and warm up | built |
+| `coltman-images start --ui [--ui-port N]` | power on, warm up, and serve the page beside the API | built |
 | `coltman-images generate --prompt "..."` | render one still and print its path | built |
 | `coltman-images stop` | graceful shutdown | built |
 | `.venv/bin/python -m unittest discover -s tests -v` | run the test matrix | built |

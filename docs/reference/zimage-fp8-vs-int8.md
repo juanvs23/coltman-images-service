@@ -694,6 +694,8 @@ anatomy-and-craft rubric, and the two specified judge models.
 - **Power.** n = 3 cells, 2 judges, and one artifact decides a cell. The
   difference is real but small in magnitude: 2 of 3 cells, one defect each.
 - **Nothing in production was changed.** The operator's 2026-11-14 ruling
-  (FP8 as the production default, INT8 as the declared fallback) stands
-  until the operator says otherwise; this section is evidence, not a
-  decision.
+  (FP8 as the production default, INT8 held in reserve) stood until the
+  operator said otherwise, and on 2026-11-16 the operator did: the A/B was run
+  to the end and the INT8 arm discarded. The system has one arm. This section
+  is evidence, not a decision, and the measurement above is untouched by that
+  ruling.

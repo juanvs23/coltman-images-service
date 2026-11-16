@@ -42,6 +42,9 @@ Time is linear: **3.87 s per step**, with about 0.9 s of fixed overhead. The
 cost of a step does not fall as the count rises, and nothing in the measurement
 suggests a cheaper step exists.
 
+The per-seed numbers behind these means — and what the divergence between the
+seeds does and does not mean — are in `steps-fidelity.md`.
+
 ## What the numbers say
 
 1. **The curve turns at 12–14.** SSIM rises from 0.77 to 0.90, and from 14→16
@@ -121,15 +124,19 @@ Two cautions, because a lever is easy to misread:
 - **3.87 s per step is this card's price at 1280×720.** Another resolution moves
   the absolute seconds; it does not change the shape of the trade.
 
-The lever is only as honest as its measurement, and the measurement has one hole:
-nobody has scored the eight error categories against the forty-five stills. Until
-that happens, the table tells you what changes and what it costs, and it does not
-tell you which row looks better.
+The lever is only as honest as its measurement. The measurement has one hole:
+the eight error categories were never scored against the forty-five stills, and
+they are not owed — the operator's own eye read of the contact sheets, recorded
+under "What the eye saw" above, is the judgment the ruling rests on. The table
+tells you what changes and what it costs; the eye read tells you what the rows
+look like.
 
 ## What this does not establish
 
 - **SSIM measures how much the image changes, not whether it is better.** A high
   value means two step counts agreed more, not that either is closer to correct.
-- **The per-image error count is missing.** The protocol defines eight countable
-  failures; nobody has scored the forty-five stills against them yet. Until that
-  exists, no document may claim that 12 and 16 differ in real quality.
+- **No per-image error count exists.** The protocol defines eight countable
+  failures, and nobody scored the forty-five stills against them; the count was
+  never produced and is not owed. The quality judgment in protocol section 12
+  is the operator's eye read, recorded above, and no document may claim a count
+  it does not have.

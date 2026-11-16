@@ -47,7 +47,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 #    model/z_image.json is tracked (473 bytes) and pinned by digest in the entry.
 
 # 3. prove it
-.venv/bin/python -m unittest discover -s tests -v      # ~7 minutes
+.venv/bin/python -m unittest discover -s tests -v      # ten to fifteen minutes
 ```
 
 **Guard 4 is the proof that step 2 worked.** The loader counts the parameter
@@ -63,6 +63,19 @@ coltman-images start                          # loads, warms up, binds 127.0.0.1
 coltman-images generate --prompt "a lighthouse at dusk"
 coltman-images stop
 ```
+
+`start` can also hand the server a deadline for itself:
+
+```bash
+coltman-images start --idle-timeout 300       # retires after 5 minutes with no work
+```
+
+With no `--idle-timeout` the server never self-terminates, which is the default.
+With one, it releases the process and the port after that many seconds with no
+request in flight and none queued — through the same drain `stop` uses. The floor
+is the measured **15.1 s** boot cost (11.0 s of it a discarded warm-up) and a
+shorter period is refused at the door, because a server that idles for less than
+it takes to start is worse than no server: the next request pays that boot again.
 
 `generate` prints the absolute path of the file it wrote, and nothing else.
 It never starts a server by itself: if none is running it exits 4 and says so.
@@ -101,13 +114,75 @@ The response records the base it started from, so no reader can mistake one for
 the other. Refuse the flag and a size above the ceiling is refused at the door,
 before any GPU work.
 
+### Use the browser
+
+The same process can serve a page, from the same queue:
+
+```bash
+coltman-images start --ui                    # the page on http://127.0.0.1:7860
+coltman-images start --ui --ui-port 8000     # somewhere else
+```
+
+`start` echoes the address on its success line. The page is two equal halves: the
+form on the left, the still and its details on the right. The form has a prompt, a
+seed (leave it empty and the server picks one and reports it), a size switch, an
+**aspect** choice and a **steps** slider. The shape decides the box and the entry
+decides how big it may be, so neither the slider nor the shapes carry a size: the
+steps range and its starting position are the entry's `limits.steps` and `steps`,
+and every box is the largest at that shape inside the entry's ceiling (or, for HD,
+inside what the declared stage can serve). The status line sits at the top of the
+right half, where you are looking while a request runs.
+
+The five shapes, and what each gives on this entry:
+
+| Shape | SD | HD |
+| --- | --- | --- |
+| `16:9` | 1280×720 | 2560×1440 |
+| `1:1` | 960×960 | 1920×1920 |
+| `4:3` | 1088×816 | 2176×1632 |
+| `3:4` | 816×1088 | 1632×2176 |
+| `9:16` | 720×1280 | 1440×2560 |
+
+`16:9`, `1:1` and `9:16` reach the ceiling exactly. `4:3` cannot: its next step up
+with both sides on the 16 grid is 1152×864, 73,728 px over `max_pixels`, so it
+stops one step lower — which is the reason the page offers a list of shapes rather
+than two free width/height fields, where you could ask for a size the card refuses.
+
+Every control also says what it does: one line under it, and a collapsed **what
+each control does** guide at the foot of the form with the detail — including the
+ten boxes this entry and its stage produce for the five shapes, all computed.
+
+It is a third door onto the same implementation, not a second renderer: it calls
+the same `submit()` the API calls, so two tabs serialise instead of loading two
+models.
+
+What the page says, and what each line means:
+
+| On screen | Means |
+| --- | --- |
+| **SD** | the native render — `upscale: null`; nothing was synthesized |
+| **HD** | a delivered size above the native ceiling, and the line names the base it started from (`upscale.from`) |
+| aspect | the shape; the box is computed from it, the entry's `limits.max_pixels` and the stage's factor |
+| `steps` (form) | the entry's ladder: its range and its default come from `limits.steps`, and a position at the default is sent as no `steps` field at all |
+| `steps N` (panel) | the count the still was actually rendered with, from the response — not the slider's position |
+| the census | parameter counts exactly as the entry's adapter declares the keys |
+| `render_s` / `load_s` / `duration_s` | the render, the load, and the whole request — the last one is the only place queue wait is visible |
+| the queue depth while it waits | the number `/health` reports: jobs waiting for the single worker — your own request counts while it waits |
+
+`--ui` is off by default, and a server started without it never imports gradio.
+If gradio is missing, `start --ui` exits 3 before loading a weight and says how
+to install it. `--ui-port` without `--ui`, or equal to the API's port, is a usage
+error (exit 2), and the page's telemetry is off: a page that called
+`api.gradio.app` would be a runtime lookup outside this tree. It keeps its file
+cache under `run/ui/`, and `stop` takes the page down with the process.
+
 ### What it costs
 
 | Request | Measured |
 | --- | --- |
 | 1280×720, 12 steps | ~46 s (43.5 s of render, ~2.6 s of load) |
 | 2560×1440 via the stage | ~52 s (the same render plus ~4.6 s of stage) |
-| boot (`start`) | ~20 s, of which ~11 s is the discarded 512×512 warm-up |
+| boot (`start`) | ~20 s, of which ~11 s is the discarded 512×512 warm-up — and the 15.1 s it spends on the server side is the floor `--idle-timeout` is refused below |
 
 There is **no per-request timeout**: a render runs until it finishes, and `stop`
 is the only abort. The queue never refuses a request; it serialises them,
@@ -131,9 +206,11 @@ curl -s -X POST localhost:8420/shutdown
 Errors are always `{"error": {"code": ..., "message": ...}}`:
 `400 invalid_request` or `500 render_failed`, and nothing else.
 
-The API sends no CORS headers and serves no page, so a browser cannot call it
-from another origin as it stands. That is a declared limitation, not an
-oversight: a client either runs in the same origin or proxies.
+The API sends no CORS headers, so a browser cannot call it from another origin as
+it stands. That is a declared limitation, not an oversight: a client either runs
+in the same origin or proxies. The page of `start --ui` is the exception by
+construction — it lives in the server process and calls `submit()` directly, so
+it needs no CORS and no proxy.
 
 ## Exit codes
 
@@ -153,12 +230,13 @@ Full table and the exact mapping: `docs/protocol.md` §5.4.
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-One test per guard: fifteen of them, about eight minutes, a dozen stills. They
-prove request validation, the lifecycle and its idempotent edges, that the
-warm-up is real, the census, determinism, the default folder, CLI/API parity,
-self-containment, single-flight, the upscale stage, one instance per card, that
-the core imports nothing from the model stack, that the entry knows no model by
-name, and that the step count is bounded by the entry.
+One test per guard, and guard 4 is written as two: ten to fifteen minutes, a dozen
+stills. They prove request validation, the lifecycle and its idempotent edges,
+that the warm-up is real, the census, determinism, the default folder, CLI/API
+parity, self-containment, single-flight, the upscale stage, one instance per
+card, that the core imports nothing from the model stack, that the entry knows
+no model by name, that the step count is bounded by the entry, and that the web
+page is a surface on the same queue and never a renderer of its own.
 
 The count lives in `docs/protocol.md` §10 and nowhere else; this section names
 what the tests are for, not how many there are today.
@@ -178,6 +256,7 @@ committed `README.md` and a gitignored `evidence/` folder.
 | `model/entry.yaml` | the model entry: assets, regime, defaults, ceiling |
 | `model/upscaler.yaml` | the declared stage: its own weights and scale |
 | `coltman_images/` | the core, plus `adapters/zimage.py` behind the adapter contract |
+| `coltman_images/ui.py` | the web page of `start --ui`: presentation for the submission seam |
 
 ## Troubleshooting
 

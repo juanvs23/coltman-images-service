@@ -5,11 +5,16 @@
 #   uv pip install --python .venv/bin/python \
 #     --index-url https://download.pytorch.org/whl/cu130 torch==2.13.0+cu130
 # Everything below then installs from PyPI on top of it.
+#
+# gradio brings the UI's own server (fastapi, starlette, uvicorn); the
+# service's API is stdlib http.server by decision, not for want of one.
 
 accelerate==1.12.0
 annotated-doc==0.0.6
 annotated-types==0.8.0
 anyio==4.16.0
+audioop-lts==0.2.2
+brotli==1.2.1
 certifi==2026.10.23
 charset-normalizer==3.5.2
 click==8.5.1
@@ -17,9 +22,14 @@ cuda-bindings==13.4.4
 cuda-pathfinder==1.8.4
 cuda-toolkit==13.0.3.0
 diffusers==0.40.0
+fastapi==0.163.1
 filelock==4.2.4
 fsspec==2026.9.0
+gradio==6.32.0
+gradio-client==2.7.2
+groovy==0.1.2
 h11==0.16.0
+hf-gradio==0.4.1
 hf-xet==1.8.0
 httpcore==1.0.9
 httpx==0.28.1
@@ -50,22 +60,33 @@ nvidia-nccl-cu13==2.29.7
 nvidia-nvjitlink==13.4.92
 nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
+opentelemetry-api==1.45.2
 optimum-quanto==0.2.7
+orjson==3.13.0
 packaging==26.3
+pandas==3.1.1
 pillow==12.3.0
 psutil==7.2.2
 pydantic==2.14.3
 pydantic-core==2.50.4
+pydub==0.25.1
 pygments==2.21.0
+python-dateutil==4.0.0
+python-multipart==0.0.34
+pytz==2026.6
 pyyaml==6.0.3
 regex==2026.11.15
 requests==2.34.2
 rich==15.0.0
+safehttpx==0.1.7
 safetensors==0.8.0
+semantic-version==2.10.0
 setuptools==78.1.0
 shellingham==1.5.4
+starlette==1.10.0
 sympy==1.14.0
 tokenizers==0.23.3
+tomlkit==0.14.0
 torchao==0.18.0
 tqdm==4.70.1
 transformers==5.17.0
@@ -73,5 +94,7 @@ triton==3.7.1
 typer==0.29.1
 typing-extensions==4.16.0
 typing-inspection==0.4.5
+tzdata==2026.6
 urllib3==2.8.0
+uvicorn==0.54.0
 zipp==4.1.2
