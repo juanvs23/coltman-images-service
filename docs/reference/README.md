@@ -1,12 +1,12 @@
 # Reference material
 
-These two files are the measurements the project's cost model is built on. They were produced before this project existed and were copied here so the numbers travel with the system instead of living outside it.
+These files are the measurements the project's cost model is built on. The first two were produced before this project existed and were copied here so the numbers travel with the system instead of living outside it; the ladder and its per-seed reading were measured here.
 
 They are **evidence, not law**. `docs/protocol.md` is the law. Where a file here and the law disagree, the law wins — and the law cites these numbers, so a disagreement is a defect in the law or in its citation, never permission to change the law silently.
 
 ## The design that no longer exists
 
-Two further documents lived here until 2026-11-15: `zimage-fp8-system.md`, which described the predecessor as a batch command-file runner with `per_command` and `warm_process` executors, and `zimage-adapter-removal.md`, the record of that adapter's removal. Both were deleted, together with the predecessor's own tree and the runtime scaffolding it left behind, because that design no longer exists anywhere and a document describing it only invites re-opening decisions the operator already closed. What those documents still had to say was the measurement, and the measurement survives in the two files below.
+Two further documents lived here until 2026-11-15: `zimage-fp8-system.md`, which described the predecessor as a batch command-file runner with `per_command` and `warm_process` executors, and `zimage-adapter-removal.md`, the record of that adapter's removal. Both were deleted, together with the predecessor's own tree and the runtime scaffolding it left behind, because that design no longer exists anywhere and a document describing it only invites re-opening decisions the operator already closed. What those documents still had to say was the measurement, and the measurement survives in `zimage-fp8-speed.md` and `zimage-fp8-vs-int8.md`.
 
 Nothing here may be used to re-open those decisions. A change to any of them is an operator ruling recorded in `docs/protocol.md`.
 
@@ -25,5 +25,6 @@ The absolute paths these records were written with have been replaced by placeho
 | `zimage-fp8-speed.md` | the production path's timing, the offload-profile comparison, the GPU, disk, swap and page-cache measurements |
 | `zimage-fp8-vs-int8.md` | the A/B between both quantization arms, the blind quality adjudication, and both checkpoints' header censuses |
 | `steps-ladder.md` | the nine-step range measured over five seeds on a hostile prompt: the time curve, the SSIM convergence, and where the ceiling actually is |
+| `steps-fidelity.md` | the same ladder read per seed: the timing variance, the SSIM per seed, and the divergence that grows with the step count — and no quality verdict |
 
 `upstream/` holds the vendor cards and the official README, with its own README extracting what they add.

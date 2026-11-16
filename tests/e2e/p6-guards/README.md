@@ -1,12 +1,14 @@
-# P6 — the eleven guards
+# The guard matrix
 
 The executable form of `docs/protocol.md` section 10: one assertion per guard, each
-aimed at the failure that guard exists to catch rather than at a proxy for it.
+aimed at the failure that guard exists to catch rather than at a proxy for it. The
+table below names every guard the matrix declares; section 10 is where the count
+is declared.
 
 - **Date:** 2026-11-15
 - **Command:** `.venv/bin/python -m unittest discover -s tests -v` (from the project root)
-- **Result:** 12 tests, `OK`, 406.6 s of test time / 407.5 s wall
-- **Verdict:** eleven guards, all green, with one disclosed exemption (guard 8, below)
+- **Result:** that run collected 12 test methods, `OK`, 406.6 s of test time / 407.5 s wall
+- **Verdict:** the guards P6 closed on, all green, with one disclosed exemption (guard 8, below). The suite has grown since that run; `docs/protocol.md` section 10 is where the current count of guards lives.
 
 The suite is `tests/test_p6_guards.py`. It is the whole matrix; nothing in it is a
 script, and nothing outside it is required.
@@ -26,11 +28,17 @@ script, and nothing outside it is required.
 | 9 | `ServiceCase.test_0500_guard09_single_flight` | Two concurrent requests both answer 200 and write their stills; their `duration_s` differ by at least 1.5×, and `/health` reports a queue depth of 1 while one waits. Both are the same server process. | 2 renders |
 | 10 | `ServiceCase.test_0600_guard10_the_upscale_stage` | A size above the ceiling without `upscale: true` is refused naming the ceiling; a size beyond `max_pixels × scale²` is refused naming the stage's reach; with permission the response declares the stage, its base, its own cost and `to`, and the census stays the render's. A permitted request at the native size delivers `upscale: null`. | 1 render (+ 4.7 s stage) |
 | 11 | `ContractCase.test_guard11_core_imports_nothing_from_the_model_stack` | In a fresh subprocess per module, `coltman_images.server`, `coltman_images.render` and `coltman_images.entry` are imported and `diffusers`, `transformers`, `safetensors`, `coltman_images.loader` and `coltman_images.fp8` are absent from `sys.modules`. | 2.6 s |
+| 12 | `ServiceCase.test_0850_guard12_one_instance` | With `run/server.json` deleted, `start` exits 0, names the running server's pid and spawns nothing; a hand-launched `python -m coltman_images.server --port 8599` exits 4 naming the instance as the reason and leaves no process behind; the state file is put back from `/health` afterwards, because the server writes it only at boot. | 0 renders (the second server is refused before it loads a weight) |
+| 13 | — | Reserved by the web UI (P9) and not written: the UI must never render outside the queue (`docs/protocol.md` section 10). | not written |
+| 14 | `ContractCase.test_guard14_entry_neutrality` | A synthetic entry with components `thing_a` and `thing_b`, no transformer config and a census of `{parameters, tensors}` loads through `entry.py` and renders one still through a stub adapter, whose pixel and call sequence the guard reads rather than trusts; an AST scan of `coltman_images/entry.py` finds none of the five model names in code, while the same scan over the Z-Image adapter finds all five — so the scan is not vacuous — and the same scan over `render.py`, `server.py` and `adapter.py` finds none. | 1 stub render (256×256, no weights on the card) |
+| 15 | `ServiceCase.test_0650_guard15_steps` | The entry's own default must lie inside `limits.steps` or the entry refuses to load, naming the range and its bounds; a step outside the range is refused before the adapter is built, so zero stub instances exist and no still is written; over HTTP the same out-of-range values answer `400 invalid_request` naming the field and the range and the worker counters do not move, while a request without `steps` reports the entry's default; and 8 and 12 steps at one seed produce different files, each identical across two runs. | 4 renders at 512×512 (two at 8 steps, two at 12) |
 
 ## The render budget
 
 Eight stills, each with one owner, each borrowed only where the borrowing guard's
-assertion is genuinely about that still:
+assertion is genuinely about that still. This is the budget of the run recorded
+below; the matrix has grown since, and each row of the table above carries its own
+guard's cost:
 
 | Still | Owner | Borrowed by |
 | --- | --- | --- |
@@ -41,7 +49,7 @@ assertion is genuinely about that still:
 
 Guard 3 costs four because the protocol's threshold is stated over four renders;
 guard 9 costs two because concurrency cannot be borrowed; guard 10 costs one base
-render. The other seven cost no GPU time at all.
+render. The other seven guards of that run cost no GPU time at all.
 
 ## Measured, this run
 
@@ -110,6 +118,9 @@ The suite owns the lifecycle, so it refuses to start if `run/server.json` exists
 `coltman_images.server` process is alive, or `127.0.0.1:8420` answers. Stop it with
 `bin/coltman-images stop` first. A single server is started once per run and stopped by
 guard 2's own test; a failure anywhere else still stops it in `tearDownClass`.
+
+How many guards a run collects is declared in `docs/protocol.md` section 10. This file
+names them.
 
 To run one guard, filter by name — `-k` still runs the class fixture:
 

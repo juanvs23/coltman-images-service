@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`coltman-images` is an independent, self-owned image generation service. It turns a generation request into a still and owns its whole lifecycle: power on and warm up, serve generations, shut down. It carries its own connection layer for applications — a loopback HTTP API an application integrates against, with the CLI as its first client — and exposes three commands: `coltman-images start`, `coltman-images generate`, `coltman-images stop`. It is named for the service, not for a model: the core is model-agnostic, and Z-Image is one adapter behind it. The model is an asset its own entry declares and uses; it is not the model's owner. It runs with no other project present. The model assets, the entry, the render core, the Z-Image adapter, the upscale stage, the server and the CLI are all in place, and the twelve guards that prove them are executable.
+`coltman-images` is an independent, self-owned image generation service. It turns a generation request into a still and owns its whole lifecycle: power on and warm up, serve generations, shut down. It carries its own connection layer for applications — a loopback HTTP API an application integrates against, with the CLI as its first client — and exposes three commands: `coltman-images start`, `coltman-images generate`, `coltman-images stop`. It is named for the service, not for a model: the core is model-agnostic, and Z-Image is one adapter behind it. The model is an asset its own entry declares and uses; it is not the model's owner. It runs with no other project present. The model assets, the entry, the render core, the Z-Image adapter, the upscale stage, the server and the CLI are all in place, and the guards that prove them are executable (`docs/protocol.md` section 10).
 
 ## Structure
 
@@ -28,7 +28,7 @@ The system owns its inputs. The checkpoint and every component live in `model/as
 Their origin, kept as provenance only — both paths are gone:
 
 - the foreign model store (a checkpoint tree with its bench and runtime venvs) — deleted 2026-11-15 with the runtime it lent.
-- the foreign component store — deleted 2026-11-15 on the operator's instruction. It held the VAE and its config, the scheduler config, the `Qwen3/` encoder and the only INT8 Z-Image checkpoint on the machine. The copies here are the only copies now, and the INT8 fallback has no weights anywhere: promoting it would mean downloading it again.
+- the foreign component store — deleted 2026-11-15 on the operator's instruction. It held the VAE and its config, the scheduler config, the `Qwen3/` encoder and the only INT8 Z-Image checkpoint on the machine. The copies here are the only copies now, and the INT8 model is gone from the machine as well: the operator ran the A/B and discarded it on 2026-11-16, so the system has one arm.
 
 The interpreter is the project's own: `.venv/bin/python` (Python 3.14.8, torch 2.13.0+cu130, CUDA 13.0). It is created from pinned requirements and lives inside the tree, so the system reads nothing outside itself. The foreign venv that store carried is no longer a dependency.
 
@@ -40,11 +40,10 @@ The project's own `.venv` has no fastapi, uvicorn, flask or starlette, so the AP
 
 The card is 8188 MiB: the 6.29 GB of FP8 weights fit with ~1.9 GiB left for activations, two models do not. Parallel workers are physically refused, so concurrency is single-flight.
 
-Both quantization arms were measured on 2026-11-13 with the transformer as the only variable: FP8 at 36.14 s warm and 36.01 s cold per image, 3.01 s/step, 9.59 s setup, 4651 MiB peak, against INT8 at 42.65 s warm and 44.13 s cold, 3.56 s/step, 74.00 s setup, 6249 MiB peak. FP8 is faster by 15–18 %, lighter by 25.6 %, and pays 87 % less setup. The quality axis runs the other way: the blind adjudication of 2026-11-15 closed INT8 2, FP8 0, tie 1. The operator's ruling of 2026-11-14 makes FP8 the production default and INT8 the declared fallback; the numbers and the adjudication are in `docs/reference/`.
+Both quantization arms were measured on 2026-11-13 with the transformer as the only variable: FP8 at 36.14 s warm and 36.01 s cold per image, 3.01 s/step, 9.59 s setup, 4651 MiB peak, against INT8 at 42.65 s warm and 44.13 s cold, 3.56 s/step, 74.00 s setup, 6249 MiB peak. FP8 is faster by 15–18 %, lighter by 25.6 %, and pays 87 % less setup. The quality axis runs the other way: the blind adjudication of 2026-11-15 closed INT8 2, FP8 0, tie 1. The operator's closing ruling of 2026-11-16 closes the question: the operator ran the A/B and discarded the INT8 model, so FP8 is the production default and the system has one arm; the numbers and the adjudication are in `docs/reference/`.
 
 ## Known issues
 
-- No version control yet. The operator's decision is open, and nobody may run `git init` unilaterally. Tracked as `[DEBT] no-version-control` in `docs/roadmap.md`.
 - No idle timeout, by design. The server never self-terminates, but it does **not** hold the card: idle it costs a process, a port and ~165 MiB, and the GPU is free between requests. Tracked as `[DEBT] no-idle-timeout` in `docs/roadmap.md`.
 - The checkpoint's header records the exporter's stack — torch 2.12.1+cu130, torchao 0.17.0+cu130, diffusers 0.40.0.dev0 — while the production runtime is torch 2.13.0. P2 validates the loader against the runtime it actually runs on; the header is a record of the export, not a requirement.
 - This project has no other home and no other name. Any other path or executable name claiming to be this system is stale.

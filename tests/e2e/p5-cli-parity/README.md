@@ -40,6 +40,7 @@ invented one would refuse work the server accepts.
 
 ## What this folder does not prove
 
-The eleven guards of protocol section 10 are P6's business. This run proves the
-CLI's contract and the parity claim only: it says nothing about determinism
-across processes (measured in P2), single-flight (P4), or the census (P4).
+The guard matrix of protocol section 10 is P6's business: the suite and its README
+live in `tests/e2e/p6-guards/`. This run proves the CLI's contract and the parity
+claim only: it says nothing about determinism across processes (measured in P2),
+single-flight (P4), or the census (P4).

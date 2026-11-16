@@ -2,7 +2,7 @@
 
 ## Next step
 
-**P9 — the web UI, inside this project.** P8 closed on 2026-11-15: `flock` on `run/server.lock` is taken before the entry is resolved, the `/proc` scan catches a server launched outside the CLI, and guard 12 proves that a deleted state file cannot buy a second instance. Thirteen tests, all green in 416 s.
+**P9 — the web UI, inside this project.** P8 closed on 2026-11-15: `flock` on `run/server.lock` is taken before the entry is resolved, the `/proc` scan catches a server launched outside the CLI, and guard 12 proves that a deleted state file cannot buy a second instance. The suite is green.
 
 The UI is declared in eight steps below. It is the first work in this project that is not a service primitive, and it is the first that adds a dependency tree — 53 packages — to a venv that has been deliberately bare.
 
@@ -17,7 +17,7 @@ No phase may start before the previous one has an **observed** exit: a command w
 | **P3** | The declared upscale stage: its own declaration in `model/upscaler.yaml`, its own weights, the tiled pass, and the request field that permits it. It applies to every entry, so it does not live in one. | A request above the render ceiling is refused without the permission and served with it; the response declares the stage and the base size it started from; the census is still the render's. | done, 2026-11-15 |
 | **P4** | The server process: warm-up, `run/server.json`, single-flight queue, `GET /health`, `POST /shutdown`, `POST /generate`, and the CLI's `start`/`stop`. `/generate` lands here rather than in P5 because a queue with no producer cannot be tested, and single-flight cannot be proven without two concurrent requests. | `start` returns after warm-up; `/health` answers warm; a second `start` exits 0 and reports the running server; `stop` releases the card and removes the state file; two concurrent requests both succeed and never run two models. | done, 2026-11-15 |
 | **P5** | `coltman-images generate` as the CLI client of the API, and the parity proof. | One prompt through the CLI writes the still (default folder or the requested path) and prints its path; a direct POST for the same seed produces the same bytes. | done, 2026-11-15 |
-| **P6** | The guards of protocol section 10 as they stood at the close of the phase (eleven; guard 12 landed in P8), at protocol section 10's thresholds. | The suite runs under the production interpreter; every guard passes or reports its failure as a failure. | done, 2026-11-15 |
+| **P6** | The guards of protocol section 10 as they stood at the close of the phase (guard 12 landed in P8), at protocol section 10's thresholds. | The suite runs under the production interpreter; every guard passes or reports its failure as a failure. | done, 2026-11-15 |
 | **P7** | The rename and the first commit: the project stops being named after its first adapter (`coltman-images-service`), and version control stops being a debt. | The suite is green under the new name, a still is byte-identical to the pre-rename one, and `git log` shows a first commit with no history invented before it. | done, 2026-11-15 |
 | **P8** | One instance, one card: the `flock` mutex on `run/server.lock`, taken before any model work, plus the `/proc` scan that catches a server started outside the CLI. The old boot order made the port useless as a guard — load, warm up, then bind meant a second process exhausted the card before it could ever reach the bind. | Guard 12 proves three things: a deleted state file does not allow a second process, a direct `python -m coltman_images.server` is refused and names the holder's pid, and exactly one server process exists after each attempt. | done, 2026-11-15 |
 | **P9** | The web UI, inside this project: `start --ui` serves a page from the same process and the same queue. Gradio is the first rendering of it, behind a seam so that what is on screen can be replaced without touching what the system does. The operator ruled that the UI belongs here rather than in a second repository: a system that needs another project to show itself is not independent. | A page renders a still through the queue; two concurrent submissions serialise; the screen states SD or HD, the base the stage started from, the census and the three timings; guard 13 proves the UI never renders outside the queue. | planned |
@@ -84,13 +84,15 @@ The guards are automatable and block. One question does **not** fit a guard, bec
 
 - a prompt built to break the model — countable fingers, six buttons, a watch dial, legible text, five cards, liquid being poured, glass reflections, skin and fabric at 200 % — because a flattering prompt measures nothing;
 - five seeds, nine step values from 4 to 24: forty-five stills, their timings, and SSIM between consecutive values per seed;
-- the error count is scored **from the stills**, by the operator or by a blind judge. A script produces images and numbers, never a verdict.
+- the error count is scored **from the stills**, by the operator or by a blind judge. A script produces images and numbers, never a verdict. **The obligation is closed**: the operator's own eye read of the contact sheets, recorded in `docs/reference/steps-ladder.md` under "What the eye saw", is the measurement. The eight-category error count was never produced and is not owed, and no document may claim that it exists.
 
-Status: thirty-five of forty-five stills exist; the ladder was interrupted once by a GPU collision and resumes from its own timing cache rather than re-rendering what it already has.
+Status: complete. All forty-five stills exist in `tests/e2e/steps-ladder/evidence/stills/`, `ssim.json` carries all five seeds across all eight pairs, and `timings.json` all forty-five entries. The ladder was interrupted once by a GPU collision and resumed from its own timing cache rather than re-rendering what it already had.
 
-The operator's partial ruling is already recorded in protocol section 12: **twelve steps show more detail; eight trade detail for speed and carry visibly more errors.** The ladder's job is to find where those two ends actually are.
+The operator's ruling is recorded in protocol section 12: **twelve steps show more detail; eight trade detail for speed and carry visibly more errors.** The ladder behind that ruling is complete, and the ends it looked for are the ones §12 names: twelve to settle, sixteen as the ceiling.
 
-The second half of the original question — whether FP8 invents more than INT8 — is now **unmeasurable here**: the INT8 weights were deleted with the foreign store they lived in, so that comparison would begin with a download, and no document may claim its result in the meantime.
+What the ladder measured per seed — the timing variance, the SSIM per seed, and the divergence that grows with the step count — is analysed in `docs/reference/steps-fidelity.md`. It is evidence, and it establishes no quality verdict: SSIM measures how much the image changes, not whether it is better.
+
+The second half of the original question — whether FP8 invents more than INT8 — is **decided**: the operator ran the A/B and discarded the INT8 model on 2026-11-16, so the system has one arm and no fallback to promote. The blind adjudication the ruling rests on is recorded in `docs/reference/zimage-fp8-vs-int8.md`; it is evidence, and the measurement did not change when the decision did.
 
 ## Debt schedule
 
@@ -119,4 +121,4 @@ accepted no warm VAE. The arithmetic was not duplicated, only the sequencing.
 
 ## Decisions that are not phases
 
-Open operator decisions live in `docs/protocol.md` section 12 and block no phase: the FP8-against-INT8 quality tension, and `steps: 8` measured but not adopted. A second entry is scheduled: the base Z-Image variant will be downloaded later and will serve the higher-quality tier, with its own entry file and its own swap cost — the time to unload, load and warm again. Until its weights exist, one entry serves the system and no request selects a model.
+Both decisions that were open are closed. The FP8-against-INT8 quality question was ruled on 2026-11-16: the A/B was run to the end, the INT8 model was discarded and the system has one arm. `steps: 8` was adopted by U2 as a request field bounded by `limits.steps` at 8..16. The decisions that remain open live in `docs/protocol.md` section 12. A second entry is scheduled: the base Z-Image variant will be downloaded later and will serve the higher-quality tier, with its own entry file and its own swap cost — the time to unload, load and warm again. Until its weights exist, one entry serves the system and no request selects a model.

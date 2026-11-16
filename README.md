@@ -153,12 +153,12 @@ Full table and the exact mapping: `docs/protocol.md` §5.4.
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-One test per guard: fifteen of them, about eight minutes, a dozen stills. They
-prove request validation, the lifecycle and its idempotent edges, that the
-warm-up is real, the census, determinism, the default folder, CLI/API parity,
-self-containment, single-flight, the upscale stage, one instance per card, that
-the core imports nothing from the model stack, that the entry knows no model by
-name, and that the step count is bounded by the entry.
+One test per guard, and guard 4 is written as two: about eight minutes, a dozen
+stills. They prove request validation, the lifecycle and its idempotent edges,
+that the warm-up is real, the census, determinism, the default folder, CLI/API
+parity, self-containment, single-flight, the upscale stage, one instance per
+card, that the core imports nothing from the model stack, that the entry knows
+no model by name, and that the step count is bounded by the entry.
 
 The count lives in `docs/protocol.md` §10 and nowhere else; this section names
 what the tests are for, not how many there are today.

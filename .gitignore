@@ -18,6 +18,10 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 
+# Tool state — the agent's own caches, never project content
+.atl/
+
+
 # Build artifacts
 build/
 dist/
