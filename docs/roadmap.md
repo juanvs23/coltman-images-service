@@ -2,7 +2,9 @@
 
 ## Next step
 
-**No phase is open.** P7 closed on 2026-11-15: the project is `coltman-images-service`, the suite runs green under the new name, a still is byte-identical to the pre-rename one (`ff3b84a0…`), and the first commit exists — `552c9f3`, with no history invented before it. What remains is not build work: the operator's open decisions in protocol section 12, and one surface that is not yet declared as a phase — the web client, which a browser-facing UI will need.
+**P8 — one instance, one card.** It is already half-built: the `flock` mutex and the `/proc` scan are in `coltman_images/server.py` and `bin/coltman-images`, and the mutex was proven by hand — a stub holding the lock makes `start` refuse and name the holder's pid. What is missing is the guard that keeps it true, and the law that records it.
+
+Running beside it, and not a phase: **the steps ladder** (see *the measurement that is not a guard*). Thirty-five of forty-five stills exist; the rest are rendering.
 
 No phase may start before the previous one has an **observed** exit: a command whose output is the proof. A document is not an exit criterion.
 
@@ -17,7 +19,11 @@ No phase may start before the previous one has an **observed** exit: a command w
 | **P5** | `coltman-images generate` as the CLI client of the API, and the parity proof. | One prompt through the CLI writes the still (default folder or the requested path) and prints its path; a direct POST for the same seed produces the same bytes. | done, 2026-11-15 |
 | **P6** | The eleven guards of protocol section 10, at protocol section 10's thresholds. | The suite runs under the production interpreter; every guard passes or reports its failure as a failure. | done, 2026-11-15 |
 | **P7** | The rename and the first commit: the project stops being named after its first adapter (`coltman-images-service`), and version control stops being a debt. | The suite is green under the new name, a still is byte-identical to the pre-rename one, and `git log` shows a first commit with no history invented before it. | done, 2026-11-15 |
-| **P8** | Clients. This phase lives outside this project: the surface is already declared, and a client adapts to it. | Nothing here. | outside |
+| **P8** | One instance, one card: the `flock` mutex on `run/server.lock`, taken before any model work, plus the `/proc` scan that catches a server started outside the CLI. The old boot order made the port useless as a guard — load, warm up, then bind meant a second process exhausted the card before it could ever reach the bind. | Guard 12 proves three things: a deleted state file does not allow a second process, a direct `python -m coltman_images.server` is refused and names the holder's pid, and exactly one server process exists after each attempt. | current |
+| **P9** | The web UI, inside this project: `start --ui` serves a page from the same process and the same queue. Gradio is the first rendering of it, behind a seam so that what is on screen can be replaced without touching what the system does. The operator ruled that the UI belongs here rather than in a second repository: a system that needs another project to show itself is not independent. | A page renders a still through the queue; two concurrent submissions serialise; the screen states SD or HD, the base the stage started from, the census and the three timings; guard 13 proves the UI never renders outside the queue. | planned |
+| **P10** | The second adapter: DreamShaper XL — a different family, a different checkpoint format, and no shared code beyond the contract. Its single-file checkpoint carries its own text encoders, so it needs no download. | The same core serves it with one adapter module and one entry, and no change to `server.py`, `render.py`, `entry.py`, or the surface the law declares. | planned |
+| **P11** | The step range as a declared contract: `limits.steps` in the entry, the ladder scored, and the ruling recorded. | A request outside the declared range is refused at the door; the ladder's table is filled in and its ruling sits in protocol section 12. | planned |
+| **P12** | External clients. This phase lives outside this project: the surface is declared, and a client adapts to it. The first-party UI is not one of them — it is P9, and it lives here. | Nothing here. | outside |
 
 ## P2 in order
 
@@ -36,15 +42,41 @@ No phase may start before the previous one has an **observed** exit: a command w
 4. Wired into `render.py` — done: `width` and `height` are the delivered file, the base is derived under the ceiling, and the response declares the chain.
 5. Measured — done: 4.6 s of stage on top of a 43.4 s render, deterministic across runs, and refusals land at the door for both missing permission and the 3,686,400 px cap.
 
-## P6: the guards, and the measurement that is not a guard
+## P8 in order
 
-The eleven guards are automatable and block. One open question does **not** fit a guard, because it needs a judgment: whether the 8-step regime invents more than the 12-step one, and whether FP8 invents more than INT8. It is scheduled as a **measurement protocol**, not a pass/fail test:
+1. `flock` on `run/server.lock` — **in code**: taken at the top of the server's entry point, before the entry is resolved and long before a weight is loaded; held for the process's life, so the kernel drops it on `kill -9` and a stale lock cannot exist.
+2. The `/proc` scan — **in code**: a process counts as this server only when its interpreter is Python *and* `coltman_images.server` is one of its own argument tokens. Matching the text anywhere on a command line made the shell that ran the check look like a server.
+3. The CLI pre-check — **in code**: `start` asks the mutex before spawning. Held and answering → report it, exit 0. Held and silent → say so, exit 4. Nothing is spawned while the card is owned.
+4. The guard — **missing**: three assertions, numbered so they run before the lifecycle guard that stops the server.
+5. The law — **missing**: section 6 and section 10 must record the mutex and guard 12.
+6. The GPU-free half — **provable now, on a busy card**: a stub holding the lock must make the server refuse *without loading anything*, which is the property that matters and the one that needs no render to check.
 
-- a fixed prompt set, three seeds, both step regimes, both quantization arms;
-- scored blind on unrequested objects and broken text;
-- the result recorded in `docs/reference/`, and the ruling recorded in protocol section 12.
+## P9 in order
 
-Until that measurement exists, no document may claim one regime hallucinates less.
+The UI is declared, not built. Its shape is fixed by three facts: a request costs 46 s, the queue is single-flight, and a browser cannot read a filesystem path.
+
+1. **The dependency, declared.** `gradio` into `.venv` and `requirements.txt` — 53 packages, with `fastapi` and `uvicorn` among them. That falsifies `context.md`'s "the venv has no fastapi, so the API uses `http.server`": the API stays stdlib **by decision**, and the UI brings its own server. The sentence is rewritten in the same work unit, not left to rot.
+2. **The submission seam.** One function on the warm server — `submit(request) -> response` — is what `POST /generate` already calls. The UI calls that and never the adapter. Without this the UI is a second renderer outside the queue, and two browser tabs are two models on one card.
+3. **`coltman_images/ui.py`.** Gradio Blocks: prompt, seed, an SD/HD switch, progress, the still. Its presentation must be replaceable without touching the seam — a UI is allowed to be plain; it is not allowed to be load-bearing.
+4. **The honest copy.** SD or HD stated; when the stage ran, the base it started from (`upscale.from`); the census; `render_s`, `load_s` and `duration_s` kept separate; and the queue depth while it waits, because a 46 s request behind another one must not look like a hang.
+5. **`start --ui [--ui-port 7860]`.** Three commands stay three: the UI is a flag on `start`, not a fourth verb.
+6. **Guard 13.** Two concurrent UI submissions serialise, and the UI module imports no adapter — the same boundary guard 11 draws for the core.
+7. **The law.** Section 1 gains the UI as a surface, section 5 a subsection, section 6 the flag, section 7 the option.
+8. **The README.** A "use the browser" section beside the CLI and the curl examples.
+
+## The measurement that is not a guard
+
+The eleven guards are automatable and block. One question does **not** fit a guard, because it needs a judgment: which step count is worth its time. It is a **measurement protocol**, not a pass/fail test, and it lives in `tests/e2e/steps-ladder/`:
+
+- a prompt built to break the model — countable fingers, six buttons, a watch dial, legible text, five cards, liquid being poured, glass reflections, skin and fabric at 200 % — because a flattering prompt measures nothing;
+- five seeds, nine step values from 4 to 24: forty-five stills, their timings, and SSIM between consecutive values per seed;
+- the error count is scored **from the stills**, by the operator or by a blind judge. A script produces images and numbers, never a verdict.
+
+Status: thirty-five of forty-five stills exist; the ladder was interrupted once by a GPU collision and resumes from its own timing cache rather than re-rendering what it already has.
+
+The operator's partial ruling is already recorded in protocol section 12: **twelve steps show more detail; eight trade detail for speed and carry visibly more errors.** The ladder's job is to find where those two ends actually are.
+
+The second half of the original question — whether FP8 invents more than INT8 — is now **unmeasurable here**: the INT8 weights were deleted with the foreign store they lived in, so that comparison would begin with a download, and no document may claim its result in the meantime.
 
 ## Debt schedule
 
