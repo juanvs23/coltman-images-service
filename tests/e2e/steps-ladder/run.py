@@ -55,6 +55,21 @@ WIDTH, HEIGHT = 1280, 720
 HERE = pathlib.Path(__file__).resolve().parent
 EVIDENCE = HERE / "evidence"
 STILLS = EVIDENCE / "stills"
+TIMINGS = EVIDENCE / "timings.json"
+
+
+def _load_timings() -> dict[str, float]:
+    """Timings already measured, so a interrupted run resumes instead of repeating.
+
+    The stills are the measurement; losing forty minutes of card because the
+    last ten renders never happened would be waste, not rigour.
+    """
+    if TIMINGS.is_file():
+        try:
+            return json.loads(TIMINGS.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def _to_tensor(path: pathlib.Path) -> torch.Tensor:
@@ -92,25 +107,33 @@ def main() -> int:
     entry = load_entry()
     rows: list[dict[str, object]] = []
 
+    timings = _load_timings()
     for seed in SEEDS:
         for steps in STEPS:
             target = STILLS / f"{seed}-steps{steps:02d}.png"
-            run = dataclasses.replace(entry, steps=steps)
-            result = render(run, PROMPT, seed=seed, width=WIDTH, height=HEIGHT, out=str(target))
+            key = f"{seed}-{steps}"
+            if target.is_file() and target.stat().st_size > 0 and key in timings:
+                render_s = timings[key]
+                print(f"seed {seed} steps {steps:2} | {render_s:6.2f} s | already measured", flush=True)
+            else:
+                run = dataclasses.replace(entry, steps=steps)
+                result = render(run, PROMPT, seed=seed, width=WIDTH, height=HEIGHT, out=str(target))
+                render_s = round(result["render_s"], 3)
+                timings[key] = render_s
+                TIMINGS.write_text(json.dumps(timings, indent=2) + "\n")
+                print(
+                    f"seed {seed} steps {steps:2} | {render_s:6.2f} s | "
+                    f"{target.stat().st_size // 1024:4d} KB",
+                    flush=True,
+                )
             rows.append(
                 {
                     "seed": seed,
                     "steps": steps,
-                    "render_s": round(result["render_s"], 3),
-                    "load_s": round(result.get("load_s", 0.0), 3),
+                    "render_s": round(render_s, 3),
                     "bytes": target.stat().st_size,
                     "out": str(target.relative_to(ROOT)),
                 }
-            )
-            print(
-                f"seed {seed} steps {steps:2} | {result['render_s']:6.2f} s | "
-                f"{target.stat().st_size // 1024:4d} KB",
-                flush=True,
             )
 
     (EVIDENCE / "results.json").write_text(json.dumps(rows, indent=2) + "\n")

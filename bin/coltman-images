@@ -16,6 +16,7 @@ Standard library only, so it runs under any interpreter on this machine; the
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import pathlib
@@ -31,6 +32,13 @@ BIND = "127.0.0.1"
 DEFAULT_PORT = 8420
 RUN_DIR = ROOT / "run"
 STATE_FILE = RUN_DIR / "server.json"
+LOCK_FILE = RUN_DIR / "server.lock"
+"""The instance mutex, held by the server process with `flock` for its lifetime.
+
+The state file is a convenience for humans; this is the truth. It survives a
+deleted state file, a different port, and a `kill -9`, because the kernel drops
+the lock when its owner dies.
+"""
 LOG_FILE = RUN_DIR / "server.log"
 PYTHON = ROOT / ".venv" / "bin" / "python"
 MODULE = "coltman_images.server"
@@ -163,7 +171,50 @@ def _report_running(state: dict, health: dict, requested_port: int | None) -> in
     return EXIT_OK
 
 
+def _lock_state() -> tuple[bool, int | None]:
+    """Whether a process owns this card, and the pid it wrote if it did.
+
+    Taking the lock and immediately releasing it is the only honest way to ask:
+    flock is advisory and per open file description, so a second descriptor in
+    this process would conflict with the owner's exactly as a separate process
+    would.
+    """
+    if not RUN_DIR.is_dir():
+        return False, None
+    try:
+        handle = open(LOCK_FILE, "a+", encoding="utf-8")
+    except OSError:
+        return False, None
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.seek(0)
+            text = handle.read().strip()
+            return True, int(text) if text.isdigit() else None
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return False, None
+    finally:
+        handle.close()
+
+
 def cmd_start(args: argparse.Namespace) -> int:
+    # The mutex comes first. A deleted state file must never let a second
+    # process load 6 GB onto a card that already holds one.
+    held, holder = _lock_state()
+    if held:
+        state = _read_state() or {}
+        port = state.get("port", DEFAULT_PORT)
+        health = _health(port) if isinstance(port, int) else None
+        if health is not None and health.get("status") == "warm":
+            return _report_running(state or {"pid": holder, "port": port}, health, args.port)
+        who = f"pid {holder}" if holder else "another process"
+        _note(
+            f"a server ({who}) already owns this card and is not answering yet — nothing was "
+            "started. Retry `coltman-images start` once it answers, or stop it."
+        )
+        return EXIT_SERVER_UNAVAILABLE
+
     state = _read_state()
 
     if state is not None:

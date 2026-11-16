@@ -35,10 +35,12 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import gc
 import json
 import logging
 import os
+import pathlib
 import queue
 import signal
 import socketserver
@@ -598,6 +600,78 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
 
+LOCK_FILE = RUN_DIR / "server.lock"
+"""The instance mutex.
+
+Not a PID file: a PID file lies the moment its process dies. This one is held
+with `flock` for the life of the process, and the kernel drops it on exit —
+including `kill -9` — so a stale lock is impossible by construction. One card,
+one instance, whatever port or state file says.
+"""
+
+
+def _other_server_pids() -> list[int]:
+    """Every live process that is really this server, and is not this one.
+
+    Matching the string anywhere on a command line is not enough: a shell whose
+    argument happens to mention the module — the one that ran this very check,
+    for instance — would match. The test is that the process is a Python
+    interpreter and the module is one of its own argument tokens.
+    """
+    mine = os.getpid()
+    found: list[int] = []
+    try:
+        entries = list(pathlib.Path("/proc").iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == mine:
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        argv = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        if not argv:
+            continue
+        if not os.path.basename(argv[0]).startswith("python"):
+            continue
+        if "coltman_images.server" not in argv:
+            continue
+        found.append(pid)
+    return found
+
+
+def _take_instance_lock() -> Any | None:
+    """Take the card, or return None when somebody else already has it."""
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    handle = open(LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
+def _release_instance_lock(handle: Any) -> None:
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
 def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="coltman-images server",
@@ -618,6 +692,34 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("port: %d is outside 1..65535", args.port)
         return EXIT_SERVER_UNAVAILABLE
 
+    # The mutex comes before any model work. The boot order is load, warm up,
+    # then bind, so a second process would exhaust the card *before* the port
+    # could refuse it — the bind is far too late to be the guard.
+    lock = _take_instance_lock()
+    if lock is None:
+        others = _other_server_pids()
+        holder = f" (pid {others[0]})" if others else ""
+        logger.error(
+            "instance: another server already owns this card%s — one instance serves "
+            "this project; run `coltman-images stop` first",
+            holder,
+        )
+        return EXIT_SERVER_UNAVAILABLE
+
+    try:
+        others = _other_server_pids()
+        if others:
+            logger.error(
+                "instance: pid %s is already running as this server — refusing a second",
+                others[0],
+            )
+            return EXIT_SERVER_UNAVAILABLE
+        return _serve(args)
+    finally:
+        _release_instance_lock(lock)
+
+
+def _serve(args: argparse.Namespace) -> int:
     app = WarmServer()
     try:
         app.boot()
