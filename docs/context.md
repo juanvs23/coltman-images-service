@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`coltman-images` is an independent, self-owned image generation service. It turns a generation request into a still and owns its whole lifecycle: power on and warm up, serve generations, shut down. It carries its own connection layer for applications — a loopback HTTP API an application integrates against, with the CLI as its first client — and exposes three commands: `coltman-images start`, `coltman-images generate`, `coltman-images stop`. It is named for the service, not for a model: the core is model-agnostic, and Z-Image is one adapter behind it. The model is an asset its own entry declares and uses; it is not the model's owner. It runs with no other project present. The model assets, the entry, the render core, the Z-Image adapter, the upscale stage, the server and the CLI are all in place, and the guards that prove them are executable (`docs/protocol.md` section 10).
+`coltman-images` is an independent, self-owned image generation service. It turns a generation request into a still and owns its whole lifecycle: power on and warm up, serve generations, shut down. It carries its own connection layer for applications — a loopback HTTP API an application integrates against, with the CLI as its first client — and exposes three commands: `coltman-images start`, `coltman-images generate`, `coltman-images stop`. It also shows itself: `start --ui` serves a web page from the same process and the same queue, which is a third door onto one implementation and never a second renderer. It is named for the service, not for a model: the core is model-agnostic, and Z-Image is one adapter behind it. The model is an asset its own entry declares and uses; it is not the model's owner. It runs with no other project present. The model assets, the entry, the render core, the Z-Image adapter, the upscale stage, the server, the CLI and the page are all in place, and the guards that prove them are executable (`docs/protocol.md` section 10).
 
 ## Structure
 
@@ -20,6 +20,7 @@ The layout is declared once, in `docs/protocol.md` section 3. This document does
 - **default folder** — `out/`, where a still is written when the request omits `out`.
 - **stage** — the declared upscale pass (protocol section 6.2). It runs only when the request permits it and asks for an area the render cannot reach; it is the system's own capability, not a property of the model.
 - **SD** and **HD** — SD is the native render with nothing synthesized; HD is a delivered size above the native ceiling, and it must be asked for. The response says which one you got: `upscale: null` is SD, a `upscale` object is HD and names the base it started from.
+- **page** — the web UI `start --ui` serves, on its own port (7860 by default) and its own thread, from the same process. It is presentation for the submission seam: it calls `WarmServer.submit()` and reaches no model, and gradio is its only dependency.
 
 ## Environment
 
@@ -45,6 +46,7 @@ Both quantization arms were measured on 2026-11-13 with the transformer as the o
 ## Known issues
 
 - No idle timeout by default. The server never self-terminates unless `start --idle-timeout SECONDS` declares a period, and that is the operator's choice, not an omission: idle, the server costs a process, a port and ~165 MiB, and the GPU is free between requests (protocol section 6).
+- The page's file cache under `run/ui/` is not pruned: it holds one copy of every still the page has served, and it is the operator's to delete (protocol section 6). It lives inside the tree on purpose — gradio's default cache is `/tmp`, which section 2 would refuse.
 - The checkpoint's header records the exporter's stack — torch 2.12.1+cu130, torchao 0.17.0+cu130, diffusers 0.40.0.dev0 — while the production runtime is torch 2.13.0. P2 validates the loader against the runtime it actually runs on; the header is a record of the export, not a requirement.
 - This project has no other home and no other name. Any other path or executable name claiming to be this system is stale.
 - The model assets are inputs: the system reads them and nothing writes them. The interpreter is the project's own `.venv`, and the only dependencies in it are the ones `requirements.txt` pins.

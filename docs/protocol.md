@@ -11,6 +11,10 @@ The law of `coltman-images`. Every other document defers to this one. Where this
 5. It declares its surface; nothing outside defines it for the system.
 6. Its three commands are exactly `coltman-images start`, `coltman-images generate`,
    `coltman-images stop`.
+7. It shows itself. The CLI and the HTTP API are two doors onto one implementation,
+   and `start --ui` adds a third — a page served by the same process, from the same
+   queue. The page is replaceable and is never a second renderer: it calls the same
+   submission seam the API calls and reaches no model (section 5.5).
 
 ## 2. Self-containment
 
@@ -45,6 +49,7 @@ A test enforces this by refusing any path outside its own tree (guard 8 in secti
 | `.venv/` | the project's own interpreter and dependencies, gitignored | present |
 | `bin/coltman-images` | CLI entry point | present |
 | `coltman_images/` | the package — `entry.py` resolves the entry, `adapter.py` is the model contract and registry, `render.py` is the model-agnostic core (plan, output, seed, stage), `server.py` is the process, `upscale.py` is the declared stage; `loader.py`, `fp8.py` and `adapters/zimage.py` are Z-Image's | built through P8 and P11, with U1 and U2 landed; the guard matrix is green |
+| `coltman_images/ui.py` | the web page — presentation for the submission seam, gradio as its only dependency, no model | built at P9 |
 | `run/` | server state, gitignored | present when a server runs |
 | `out/` | default output folder, gitignored | present |
 | `tests/` | the test matrix — the guards of section 10 | green |
@@ -89,12 +94,12 @@ The closed vocabulary is `prompt`, `seed`, `width`, `height`, `out`, `steps` and
 
 ## 5. The surface
 
-Two doors, one implementation. The CLI is a client of the HTTP API; it contains no rendering and no second implementation of anything.
+Three surfaces, one implementation. The CLI is a client of the HTTP API; it contains no rendering and no second implementation of anything. The web UI (§5.5) runs inside the server process and calls the same submission seam the API's handler calls; it contains no rendering either.
 
 ### 5.1 CLI
 
 ```
-coltman-images start [--port N] [--foreground] [--idle-timeout SECONDS]
+coltman-images start [--port N] [--foreground] [--idle-timeout SECONDS] [--ui [--ui-port N]]
 coltman-images generate --prompt "..." [--seed N] [--width N] [--height N] [--out PATH] [--steps N] [--upscale] [--json]
 coltman-images stop
 ```
@@ -163,6 +168,20 @@ Errors are always `{"error": {"code": ..., "message": ...}}` — never a bare st
 
 A CLI failure maps the server's status as `400 → 2`, `500 → 1`; no state file or an unreachable port is `4`; a missing asset at `start` is `3`. A request the server never accepted is `4`; a request the server accepted and failed is `1`.
 
+### 5.5 The web UI
+
+The page is the third door onto the same implementation, and it is a door the operator opens at `start` time rather than one a client integrates against.
+
+- **It calls the seam and nothing else.** `WarmServer.submit(request)` is its only route to a still (section 9, rule 8). No adapter, no render core, no queue: a page that reached any of them would be a second producer on one card, and two browser tabs would be two models.
+- **It adds nothing to the contract.** No field on the request (section 4.1 is untouched), no endpoint on the API, no fourth command. What the page shows is the section 4.2 response, rendered.
+- **It is presentation, and it is replaceable.** `coltman_images/ui.py` holds four things and nothing else — the pure request builder, the one line that calls the seam, the generator that reports while it waits, and the page — plus one private helper that sizes HD from the entry's ceiling. Gradio is the first rendering of it; swapping it is replacing the page inside that module, and the seam, the queue and the law do not move.
+- **It renders what the response declares.** SD or HD is `upscale: null` against an `upscale` object; the base the stage started from is `upscale.from`; the census is key and value exactly as the entry's adapter declares them, never a key written into the page; `render_s`, `load_s` and `duration_s` stay separate, because the last one is where queue wait and load are visible. Every size comes from the entry or the response — the SD/HD switch multiplies the entry's defaults by the stage's declared scale, and carries no size of its own.
+- **It has no queue of its own.** The server's single-flight queue is the only one, so the page's own concurrency limit is unlimited: every submission reaches the seam at once and waits where the depth is visible. Measured before the rule: with gradio's default limit of one, a second submission sat *in front of* the seam — tens of seconds, and the pre-fix transcript was not kept, so no figure is claimed — invisible to the status line, which made the page a queue of its own and hid the wait it was supposed to show. Gradio still dispatches through a thread pool bounded by its `max_threads` (40 by default), so beyond forty simultaneous submissions it holds one; that bound belongs to the rendering layer and is declared here rather than papered over. Everything that crosses the seam waits in the server's queue, which never refuses.
+- **It reports while it waits.** A request costs ~46 s and may wait behind another, so the submission runs in a worker thread and the status line carries the server's queue depth — the number `/health` reports, quoted and never interpreted, because a depth cannot say whether the request ahead is waiting or already on the card, and it counts the caller's own request until the worker picks it up. A quiet page must not be indistinguishable from a hung one.
+- **A failure is named for what happened.** The seam's three outcomes are three different sentences on the page: refused before any GPU work (`InvalidRequest`), accepted and then failed (`RenderFailed`), and not accepting work at all (`ServerError`). A page that called every one of them "refused" would lie about a render it actually ran.
+- **It reaches nothing else.** The page is handed the warm server and may read `submit`, `depth`, `entry` and `declaration` — the seam and the declarations, never `adapter`, `_queue` or `_enqueue`. It imports no adapter, no loader, no render core and not the declared stage, and it carries none of the entry's sizes: guard 13 asserts all of it on the parsed module, with arithmetic folded, so `640 * 2` and `"1280x720"` are caught like a bare `1280`.
+- **It telephones nothing.** Analytics and the version check are off: a page that called `api.gradio.app` or `huggingface.co` would be a runtime lookup outside this tree (section 2). Measured, the server's own log for a `--ui` boot contains no `https://` line at all. Gradio's file cache — where it copies a still to serve it — lives under `run/ui/`, inside the tree, for the same reason.
+
 ## 6. The lifecycle
 
 The three commands are one state machine.
@@ -210,6 +229,12 @@ Single-flight: one worker and one FIFO queue that never refuses a request; its d
 `start --idle-timeout SECONDS` declares the other behavior. **Idle means no request in flight and none queued**, both conditions at once — a 45 s render leaves the queue empty while the card is busy, so a period measured on the queue alone would cut a render. When the declared period passes with nothing to do, the server retires through the same path `POST /shutdown` uses: it drains, releases, removes `run/server.json` and exits 0. There is no second retirement path. The period counts from the moment the server *becomes* idle, not from the moment a request was accepted, or a long render would eat the whole period and the server would retire the instant it finished.
 
 The floor is the measured boot cost, **15.1 s** (11.0 s of it a discarded warm-up), and `start` refuses anything below it with exit 2 before any work: a server that idles for less than it takes to start is worse than no server. The trade the option makes is exactly that boot — the next request after a retirement pays it again. `start` is idempotent for this option as it is for `--port`: a period given while a server is already running is reported on stderr and ignored, and the running server keeps the period it was started with — the period is not recorded in `run/server.json` or `/health`, so the CLI reports what it was given rather than a comparison it cannot make.
+
+`start --ui` serves the web page from the same process (section 5.5). The page is a second server — gradio's own, not this project's — on `127.0.0.1:7860` by default, in its own thread, while the API stays the stdlib `http.server` on its own port in the main thread. **The two never share a socket**, and nothing about the API changes when the page is mounted: the handler, the queue, the state file and the endpoints are the same ones. `--ui-port N` names the page's port and is refused without `--ui` (exit 2, a usage error): a flag that declares nothing must not look like it did something.
+
+A server started **without** `--ui` imports nothing from gradio. The import happens inside that branch and never at module scope, so the API's dependency set is exactly what it was before P9 and a page is never a reason for the service to need a second framework. **If gradio is not importable when `--ui` is asked for, `start` exits 3** — naming what is missing and how to install it — before the mutex is taken and before any weight is loaded: the flag declares a capability, and an absent declared capability is an undeclared thing. `stop` takes the page down with the process; there is no second shutdown path. `start --ui` is idempotent as `--port` and `--idle-timeout` are: asking for a page or a different port on an already-running server is reported on stderr and ignored, because the running surface is not recorded in `run/server.json` or `/health` and the CLI will not claim a comparison it cannot make.
+
+Two ports on one host, and neither may be the other: `--ui-port` equal to `--port` is refused with exit 2 before the mutex, because the two surfaces never share a socket. The page writes one thing inside the tree: gradio serves a still by copying it into a file cache, and `GRADIO_TEMP_DIR` points that cache at `run/ui/` — declared here because section 2 allows writes to the stills, `run/` and `out/`, and to nothing else, and a cache in `/tmp` would be an undeclared write. **The cache is not pruned**; it holds one copy of every still the page has shown, and it is the operator's to delete — the page re-creates a copy the next time it serves that file. The page's analytics and version check are off for the same reason, and both settings are assigned by the server process rather than inherited, so an exported `GRADIO_TEMP_DIR` or `GRADIO_ANALYTICS_ENABLED` in the operator's shell cannot move them.
 
 `run/server.json`:
 
@@ -315,6 +340,8 @@ Every option the system honours is named here. There is no hidden default anywhe
 | warm-up prompt | `"warm up"` | `start` (value lives in `model/entry.yaml`, section 6.1) |
 | warm-up seed | 0 | `start` (value lives in `model/entry.yaml`, section 6.1) |
 | idle timeout | none: the server never self-terminates | `start` — at least the 15.1 s boot cost, refused below it |
+| ui | off: no page and no gradio import | `start` |
+| ui-port | 7860 | `start --ui`; refused without `--ui` |
 | queue | unbounded FIFO; depth reported in `/health` | server |
 | stop grace | 30 s | `stop` |
 | steps | 12 | model entry — the default; a request may override it inside `limits.steps` |
@@ -346,7 +373,7 @@ Six steps, each built and exercised alone before the next begins.
 
 ## 10. The test matrix
 
-Sixteen guards are declared, each with the failure it catches. Guard 13 is reserved by the web UI (P9) and is not written yet, so fifteen are written and the table carries those fifteen. The suite collects sixteen test methods, because guard 4 is written as two (`04` and `04b`). This section is the only place the count of the current matrix is declared: every other document names the guards without counting them. A dated record of a past run keeps that run's own numbers — how many methods it collected, how long it took — because that is what it measured; `tests/e2e/p6-guards/README.md` holds the P6 run of 2026-11-15, and its twelve test methods are that run's, not the matrix's.
+Sixteen guards are declared, each with the failure it catches. All sixteen are written, and the suite collects seventeen test methods, because guard 4 is written as two (`04` and `04b`). This section is the only place the count of the current matrix is declared: every other document names the guards without counting them. A dated record of a past run keeps that run's own numbers — how many methods it collected, how long it took — because that is what it measured; `tests/e2e/p6-guards/README.md` holds the P6 run of 2026-11-15, and its twelve test methods are that run's, not the matrix's.
 
 | # | Guard | Failure it catches |
 | --- | --- | --- |
@@ -362,6 +389,7 @@ Sixteen guards are declared, each with the failure it catches. Guard 13 is reser
 | 10 | The upscale stage runs only when the request permits it and exceeds the native ceiling; when it runs, the response declares the base it started from and the stage's own cost, and the census stays the render's. | A stage that silently synthesizes pixels, or a response that lets a reader believe the model rendered them. |
 | 11 | The core imports nothing from the model stack: no `diffusers`, `transformers`, `safetensors`, `coltman_images.loader` or `coltman_images.fp8` is reachable from `server.py`, `entry.py` or `render.py`. | A core that must be edited for every new model, which is the coupling an adapter exists to remove. |
 | 12 | One instance, one card: with the state file deleted, `start` reports the running server instead of spawning a second; a hand-launched `python -m coltman_images.server` on another port is refused before it loads a weight; exactly one server process exists after each attempt. | A second process loading a second transformer onto a card that holds one, which is an out-of-memory crash rather than a slow request. |
+| 13 | The web UI is a surface on the seam, never a second renderer: `coltman_images/ui.py` imports nothing from the model stack and carries none of the entry's sizes, reads only `submit`, `depth`, `entry` and `declaration` from the server it is handed, maps the SD/HD switch to the entry's own ceiling and aspect, names a refused request and a failed render differently, and — fired through the page itself — two concurrent submissions still serialise by a whole render. | A page that renders beside the queue — two browser tabs, two models, one card. |
 | 14 | Entry neutrality: an entry with arbitrary component names, no transformer config and no float8 census loads through `entry.py` and renders through a stub adapter; and no model-specific name survives in `coltman_images/entry.py`, checked on the parsed code rather than on prose. | A law only one model can satisfy, which turns a second model into surgery on the core. |
 | 15 | The step count is a request field bounded by the entry: a value outside `limits.steps` is refused before any adapter call, a value inside appears in the response, and an absent value means the entry's default. | A speed control enforced nowhere, or a request that silently renders at the default while the caller believes it chose. |
 | 16 | Idle timeout: a period below the boot cost is refused at the door and starts nothing; with one declared, a request that outlasts the period is served whole rather than cut; and once the server falls idle it retires on its own — port silent, state file removed, process gone — through the path `stop` uses, with the reason in its own log. | A server that never releases a forgotten port, or one whose timer cuts a render in flight. |

@@ -102,8 +102,9 @@ protocol:
    defaults and no `upscale`. No GPU, no server.
 
 Guard 13 is written in `tests/test_p6_guards.py` like its siblings, and the count
-in protocol section 10 moves: seventeen guards declared, guard 13 no longer
-reserved, sixteen written, seventeen test methods.
+in protocol section 10 moves: guard 13 is no longer reserved. The count itself is
+declared only there — sixteen guards, all written, seventeen test methods — because
+section 10 is the one place the matrix's size is counted.
 
 ## 6. The law, in this same work unit
 

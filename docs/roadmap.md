@@ -2,9 +2,9 @@
 
 ## Next step
 
-**P9 — the web UI, inside this project.** P8 closed on 2026-11-15: `flock` on `run/server.lock` is taken before the entry is resolved, the `/proc` scan catches a server launched outside the CLI, and guard 12 proves that a deleted state file cannot buy a second instance. The suite is green.
+**P10 — the second adapter, DreamShaper XL — and it cannot start: B3 is open.** P9 closed on 2026-11-16. `start --ui` serves a page from the same process and the same queue: the page produced this project's own baseline bytes — `a lighthouse at dusk`, seed 7, 1280×720, `sha256 ff3b84a0…` — two submissions fired **through the page** serialise at **1.997** (first status within 0.1 s of each click), the screen states SD or HD with the base the stage started from, the census and the three timings, and guard 13 holds the page to the seam. A `--ui` boot writes no `https://` line at all. The suite is green — `Ran 17 tests in 822.983 s`, `OK`.
 
-The UI is declared in eight steps below. It is the first work in this project that is not a service primitive, and it is the first that adds a dependency tree — twenty packages on a closure of fifty, measured — to a venv that has been deliberately bare. **It cannot start until B1 and B2 are cleared**, and neither can P10 until B3 is.
+What stands between here and P10 is not code. B3 is the checkpoint plus its sidecars, and the three answers its row lists — the variant, the regime the entry declares, and D2 alone. The operator's order of 2026-11-16 stands: build the UI first and test a new model through it once it works. The UI now works.
 
 No phase may start before the previous one has an **observed** exit: a command whose output is the proof. A document is not an exit criterion.
 
@@ -26,9 +26,11 @@ follow.
 
 ### Deferred behind P9 — the operator's order of 2026-11-16
 
-B3, P10 and U3 wait for P9. The ruling: **build the UI first, and test a new model through it when it works.** Nothing
-about the UI's construction depends on them — P9 needs B1 and B2, both cleared — so this is an ordering decision and not
-a dependency. The survey behind B3 is recorded here so the work resumes without repeating it.
+B3, P10 and U3 waited for P9. The ruling: **build the UI first, and test a new model through it when it works.**
+Nothing about the UI's construction depended on them — P9 needed B1 and B2, both cleared — so this was an ordering
+decision and not a dependency. **P9 closed on 2026-11-16, so the deferral is discharged**: what waits now waits only on
+B3 for P10 and on B4 for U3, and the UI is the place the second model will be tried. The survey behind B3 is recorded here
+so the work resumes without repeating it.
 
 The three usable single-file checkpoints are the same 6,939,220,250 bytes with identical headers. The digests below are
 the Hub's LFS oids, which are the files' `sha256`; they are **pins to verify against the downloaded bytes**, not declared
@@ -66,7 +68,7 @@ needed before a download.
 | **P6** | The guards of protocol section 10 as they stood at the close of the phase (guard 12 landed in P8), at protocol section 10's thresholds. | The suite runs under the production interpreter; every guard passes or reports its failure as a failure. | done, 2026-11-15 |
 | **P7** | The rename and the first commit: the project stops being named after its first adapter (`coltman-images-service`), and version control stops being a debt. | The suite is green under the new name, a still is byte-identical to the pre-rename one, and `git log` shows a first commit with no history invented before it. | done, 2026-11-15 |
 | **P8** | One instance, one card: the `flock` mutex on `run/server.lock`, taken before any model work, plus the `/proc` scan that catches a server started outside the CLI. The old boot order made the port useless as a guard — load, warm up, then bind meant a second process exhausted the card before it could ever reach the bind. | Guard 12 proves three things: a deleted state file does not allow a second process, a direct `python -m coltman_images.server` is refused and names the holder's pid, and exactly one server process exists after each attempt. | done, 2026-11-15 |
-| **P9** | The web UI, inside this project: `start --ui` serves a page from the same process and the same queue. Gradio is the first rendering of it, behind a seam so that what is on screen can be replaced without touching what the system does. The operator ruled that the UI belongs here rather than in a second repository: a system that needs another project to show itself is not independent. | A page renders a still through the queue; two concurrent submissions serialise; the screen states SD or HD, the base the stage started from, the census and the three timings; guard 13 proves the UI never renders outside the queue. | planned |
+| **P9** | The web UI, inside this project: `start --ui` serves a page from the same process and the same queue. Gradio is the first rendering of it, behind a seam so that what is on screen can be replaced without touching what the system does. The operator ruled that the UI belongs here rather than in a second repository: a system that needs another project to show itself is not independent. | A page renders a still through the queue; two concurrent submissions serialise; the screen states SD or HD, the base the stage started from, the census and the three timings; guard 13 proves the UI never renders outside the queue. | done, 2026-11-16 |
 | **P10** | The second adapter: DreamShaper XL — a different family, a different checkpoint format, and no shared code beyond the contract. Its single-file checkpoint carries the UNet, both CLIP text encoders and the VAE — so no *separate* encoder download — but not the configs or tokenizers, and the checkpoint itself is not in this tree and is not on this machine (blocker B3). Measured on this card: the UNet is 4897 MiB, smaller than the 6057 MiB transformer this system already runs, so it fits; but loading the file the way every card shows it — `from_single_file(...).to("cuda")` — peaks at 6616 MiB of weights and **OOMs in the decode**, so the adapter must stage the parts the way `zimage` already stages its two models. | The same core serves it with one adapter module and one entry, and no change to `server.py`, `render.py`, `entry.py`, or the surface the law declares. | planned |
 | **P11** | The step range as a declared contract: `limits.steps` in the entry, so a request outside the measured range is refused at the door instead of rendering outside it. The ladder behind the range is measured and recorded. | A request outside the declared range is refused at validation; `docs/reference/steps-ladder.md` and protocol section 12 carry the measurement and the ruling. | done, 2026-11-15 |
 | **P12** | External clients. This phase lives outside this project: the surface is declared, and a client adapts to it. The first-party UI is not one of them — it is P9, and it lives here. | Nothing here. | outside |
@@ -99,16 +101,51 @@ needed before a download.
 
 ## P9 in order
 
-The UI is declared, not built. Its shape is fixed by three facts: a request costs 46 s, the queue is single-flight, and a browser cannot read a filesystem path.
+The UI is built. Its shape was fixed by three facts — a request costs ~46 s, the queue is single-flight, and a browser
+cannot read a filesystem path — and the eight steps below are all in code, with the numbers this work unit measured.
 
-1. **The dependency, declared (B2).** `gradio` into `.venv` and `requirements.txt` — twenty new packages on a closure of fifty, `fastapi` and `uvicorn` among them. That falsifies `context.md`'s "the venv has no fastapi, so the API uses `http.server`": the API stays stdlib **by decision**, and the UI brings its own server. The sentence is rewritten in the same work unit, not left to rot.
-2. **The submission seam (B1).** One function on the warm server — `submit(request) -> response` — that `POST /generate` calls. It does **not** exist yet: the handler validates, plans, enqueues and waits inline, so this is an extraction and not a rewiring. The UI calls that seam and never the adapter. Without it the UI is a second renderer outside the queue, and two browser tabs are two models on one card.
-3. **`coltman_images/ui.py`.** Gradio Blocks: prompt, seed, an SD/HD switch, progress, the still. Its presentation must be replaceable without touching the seam — a UI is allowed to be plain; it is not allowed to be load-bearing.
-4. **The honest copy.** SD or HD stated; when the stage ran, the base it started from (`upscale.from`); the census; `render_s`, `load_s` and `duration_s` kept separate; and the queue depth while it waits, because a 46 s request behind another one must not look like a hang. Two constraints already hold today and must survive a second entry: **the census renders generically** — key and value exactly as the response declares them, never Z-Image's `float8`/`plain`/`other`/`total` written into the UI, because section 6.1 makes the adapter the owner of what a census key means and the next model has no FP8 at all (measured: 2516 tensors, every one F16); and **every size comes from the entry or the response** — `limits.max_pixels` and the defaults are per-entry, so the SD/HD switch must not carry 1280×720 as a constant.
-5. **`start --ui [--ui-port 7860]`.** Three commands stay three: the UI is a flag on `start`, not a fourth verb.
-6. **Guard 13.** Two concurrent UI submissions serialise, and the UI module imports no adapter — the same boundary guard 11 draws for the core.
-7. **The law.** Section 1 gains the UI as a surface, section 5 a subsection, section 6 the flag, section 7 the option.
-8. **The README.** A "use the browser" section beside the CLI and the curl examples.
+1. **The dependency, declared (B2).** **Done.** `gradio` 6.32.0 into `.venv` and `requirements.txt` — twenty new packages
+   on a closure of fifty, `fastapi` and `uvicorn` among them — and **nothing already pinned moved**. The API stays stdlib
+   **by decision**: it is three endpoints and a queue, and the page brings its own server beside it.
+2. **The submission seam (B1).** **Done.** `WarmServer.submit(request) -> response` owns validation, the plan, the enqueue
+   and the wait. `POST /generate` calls it, the page calls it, and nothing else does — one producer (section 9 rule 8).
+3. **`coltman_images/ui.py`.** **Done, and it is four things and nothing else**: `request_from_form` (pure, no I/O),
+   `render` (one line into the seam), `generate` (a **generator**: the submission runs in a worker thread and a status
+   string is yielded every 0.5 s until the response object arrives), and `build` (the page). The module imports gradio and
+   nothing model-bearing, and gradio is imported inside the server's `--ui` branch and never at module scope — measured:
+   `import coltman_images.server` leaves `gradio` out of `sys.modules`.
+4. **The honest copy.** **Done, and both constraints survived.** SD is `upscale: null` and HD is an `upscale` object that
+   names `from`; the census is rendered key by key exactly as the response declares it; `render_s`, `load_s` and
+   `duration_s` are three separate lines; and the server's queue depth is on screen while a request waits — measured with
+   two submissions at once, the waiting one naming `queue depth 1` for its whole wait. The census keys are not written into
+   the page, and neither is a size: guard 13 parses `ui.py` and refuses 1280, 720, 2560, 1440 and 921600 as literals —
+   folded, so `640 * 2` and `"1280x720"` are caught too. HD is derived from the entry's ceiling and aspect rather than
+   from `defaults x factor`, which only clears the ceiling while the defaults sit at it — measured HD: 2560×1440 delivered
+   from a 1280×720 render.
+5. **`start --ui [--ui-port 7860]`.** **Done.** A flag on `start`, never a fourth verb; it travels to the server process as
+   `--ui`/`--ui-port` exactly as `--idle-timeout` does; `start` echoes `ui http://127.0.0.1:7860` on its success line; a
+   differing request on a running server is reported and ignored; `--ui-port` without `--ui`, or equal to the API's port,
+   is exit 2; and gradio absent under `--ui` is exit 3 before the mutex and before any weight.
+6. **Guard 13.** **Done and green.** Structural: no model import, no entry size, no attribute of the warm server beyond
+   `submit`, `depth`, `entry` and `declaration`, and the positive control that the module does call `submit()` — with the
+   same scan finding ten forbidden imports in the Z-Image adapter, so it can find something. Unit: the switch maps to the
+   entry's own ceiling and aspect, as a property and on an entry whose defaults do not sit at that ceiling. Behavioural:
+   the page answers `200 text/html` on its own port, two submissions fired **through the page** serialise at **1.997**
+   (separator 1.5) with both reporting their first status within 0.1 s, and `stop` takes the page down. The shared
+   fixture still starts its server **without** `--ui`, so the matrix proves the API needs nothing from gradio.
+7. **The law.** **Done:** section 1 gains the page as a surface, section 3 the module, section 5.5 the subsection, section 6
+   the flag, the two ports, the page's cache under `run/` and its telemetry off, section 7 the two options, section 10
+   guard 13 and the counts.
+8. **The README.** **Done:** a "Use the browser" section beside the CLI and the curl examples.
+
+Three things were found by running it rather than reasoned about. **Gradio serialises event handlers by default**, so a
+second page submission waited inside gradio, *before reaching the seam* — the page was a queue of its own and the depth
+line could never see it; the page's concurrency limit is now unlimited and the server's queue is the only one (the pre-fix
+transcript was not kept, so no figure is claimed for it). **Gradio serves a still by copying it into a cache of its own**,
+which was landing in `/tmp`; `GRADIO_TEMP_DIR` now points at `run/ui/`, assigned by the server rather than defaulted, and
+the cache is not pruned. And **gradio telephoned home on every mount** — `HEAD https://huggingface.co/api/telemetry/…`
+and `GET https://api.gradio.app/pkg-version` — which section 2 refuses outright; analytics are off in the page and in the
+environment, and a `--ui` boot now writes no `https://` line at all. The operator-level run is in `tests/e2e/p9-ui/`.
 
 ## The entry-generalization brief
 

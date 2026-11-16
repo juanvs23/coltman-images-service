@@ -47,7 +47,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 #    model/z_image.json is tracked (473 bytes) and pinned by digest in the entry.
 
 # 3. prove it
-.venv/bin/python -m unittest discover -s tests -v      # ~7 minutes
+.venv/bin/python -m unittest discover -s tests -v      # ~14 minutes
 ```
 
 **Guard 4 is the proof that step 2 worked.** The loader counts the parameter
@@ -114,6 +114,38 @@ The response records the base it started from, so no reader can mistake one for
 the other. Refuse the flag and a size above the ceiling is refused at the door,
 before any GPU work.
 
+### Use the browser
+
+The same process can serve a page, from the same queue:
+
+```bash
+coltman-images start --ui                    # the page on http://127.0.0.1:7860
+coltman-images start --ui --ui-port 8000     # somewhere else
+```
+
+`start` echoes the address on its success line. The page has a prompt, a seed
+(leave it empty and the server picks one and reports it), a size switch and the
+still. It is a third door onto the same implementation, not a second renderer:
+it calls the same `submit()` the API calls, so two tabs serialise instead of
+loading two models.
+
+What the page says, and what each line means:
+
+| On screen | Means |
+| --- | --- |
+| **SD** | the native render — `upscale: null`; nothing was synthesized |
+| **HD** | a delivered size above the native ceiling, and the line names the base it started from (`upscale.from`) |
+| the census | parameter counts exactly as the entry's adapter declares the keys |
+| `render_s` / `load_s` / `duration_s` | the render, the load, and the whole request — the last one is the only place queue wait is visible |
+| the queue depth while it waits | the number `/health` reports: jobs waiting for the single worker — your own request counts while it waits |
+
+`--ui` is off by default, and a server started without it never imports gradio.
+If gradio is missing, `start --ui` exits 3 before loading a weight and says how
+to install it. `--ui-port` without `--ui`, or equal to the API's port, is a usage
+error (exit 2), and the page's telemetry is off: a page that called
+`api.gradio.app` would be a runtime lookup outside this tree. It keeps its file
+cache under `run/ui/`, and `stop` takes the page down with the process.
+
 ### What it costs
 
 | Request | Measured |
@@ -144,9 +176,11 @@ curl -s -X POST localhost:8420/shutdown
 Errors are always `{"error": {"code": ..., "message": ...}}`:
 `400 invalid_request` or `500 render_failed`, and nothing else.
 
-The API sends no CORS headers and serves no page, so a browser cannot call it
-from another origin as it stands. That is a declared limitation, not an
-oversight: a client either runs in the same origin or proxies.
+The API sends no CORS headers, so a browser cannot call it from another origin as
+it stands. That is a declared limitation, not an oversight: a client either runs
+in the same origin or proxies. The page of `start --ui` is the exception by
+construction — it lives in the server process and calls `submit()` directly, so
+it needs no CORS and no proxy.
 
 ## Exit codes
 
@@ -166,12 +200,13 @@ Full table and the exact mapping: `docs/protocol.md` §5.4.
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-One test per guard, and guard 4 is written as two: about ten minutes, a dozen
+One test per guard, and guard 4 is written as two: about fourteen minutes, a dozen
 stills. They prove request validation, the lifecycle and its idempotent edges,
 that the warm-up is real, the census, determinism, the default folder, CLI/API
 parity, self-containment, single-flight, the upscale stage, one instance per
 card, that the core imports nothing from the model stack, that the entry knows
-no model by name, and that the step count is bounded by the entry.
+no model by name, that the step count is bounded by the entry, and that the web
+page is a surface on the same queue and never a renderer of its own.
 
 The count lives in `docs/protocol.md` §10 and nowhere else; this section names
 what the tests are for, not how many there are today.
@@ -191,6 +226,7 @@ committed `README.md` and a gitignored `evidence/` folder.
 | `model/entry.yaml` | the model entry: assets, regime, defaults, ceiling |
 | `model/upscaler.yaml` | the declared stage: its own weights and scale |
 | `coltman_images/` | the core, plus `adapters/zimage.py` behind the adapter contract |
+| `coltman_images/ui.py` | the web page of `start --ui`: presentation for the submission seam |
 
 ## Troubleshooting
 

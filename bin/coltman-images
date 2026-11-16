@@ -8,6 +8,8 @@ codes of section 5.4.
 
 All three commands are built: `start` and `stop` own the process, and `generate`
 POSTs one request and prints what came back — rendering stays in the server.
+`start --ui` additionally asks that process for a web page on its own port; this
+command never imports gradio and never serves anything itself.
 
 Standard library only, so it runs under any interpreter on this machine; the
 *server* it launches always runs under the project's own `.venv/bin/python`.
@@ -30,6 +32,8 @@ import urllib.request
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BIND = "127.0.0.1"
 DEFAULT_PORT = 8420
+DEFAULT_UI_PORT = 7860
+"""The web UI's port when `start --ui` asks for one (protocol sections 6 and 7)."""
 RUN_DIR = ROOT / "run"
 STATE_FILE = RUN_DIR / "server.json"
 LOCK_FILE = RUN_DIR / "server.lock"
@@ -164,6 +168,8 @@ def _report_running(
     health: dict,
     requested_port: int | None,
     requested_idle_timeout: float | None = None,
+    requested_ui: bool = False,
+    requested_ui_port: int | None = None,
 ) -> int:
     pid = health.get("pid", state.get("pid"))
     port = health.get("port", state.get("port"))
@@ -176,6 +182,13 @@ def _report_running(
         _note(
             f"--idle-timeout {requested_idle_timeout:g} ignored: the running server keeps "
             "the idle period it was started with (stop it first to change it)"
+        )
+    if requested_ui:
+        asked = DEFAULT_UI_PORT if requested_ui_port is None else requested_ui_port
+        _note(
+            f"--ui (port {asked}) ignored: the running server keeps the surface it was "
+            "started with — its address is not in the state file or /health, so this "
+            "command cannot compare; stop it first to change it"
         )
     print(f"coltman-images: already running — pid {pid}, port {port}, state {health.get('status')}")
     return EXIT_OK
@@ -222,6 +235,8 @@ def cmd_start(args: argparse.Namespace) -> int:
             health,
             args.port,
             args.idle_timeout,
+            args.ui,
+            args.ui_port,
         )
         who = f"pid {holder}" if holder else "another process"
         _note(
@@ -236,7 +251,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         port = state.get("port", DEFAULT_PORT)
         health = _health(port) if isinstance(port, int) else None
         if health is not None and health.get("status") == "warm":
-            return _report_running(state, health, args.port, args.idle_timeout)
+            return _report_running(state, health, args.port, args.idle_timeout, args.ui, args.ui_port)
 
         pid = state.get("pid")
         if _our_server(pid):
@@ -270,6 +285,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     command = [str(PYTHON), "-u", "-m", MODULE, "--port", str(port)]
     if args.idle_timeout is not None:
         command += ["--idle-timeout", repr(float(args.idle_timeout))]
+    if args.ui:
+        # The flag travels as a flag: the server process decides what a page
+        # means, and this command decides nothing about gradio (section 5.5).
+        command += ["--ui"]
+        if args.ui_port is not None:
+            command += ["--ui-port", str(args.ui_port)]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
 
@@ -322,9 +343,13 @@ def cmd_start(args: argparse.Namespace) -> int:
         if args.idle_timeout is None
         else f", idle timeout {args.idle_timeout:g} s"
     )
+    surface = ""
+    if args.ui:
+        ui_port = DEFAULT_UI_PORT if args.ui_port is None else args.ui_port
+        surface = f", ui http://{BIND}:{ui_port}"
     print(
         f"coltman-images: started — pid {health.get('pid')}, port {health.get('port')}, "
-        f"state {health.get('status')}{deadline}"
+        f"state {health.get('status')}{deadline}{surface}"
     )
     if not args.foreground:
         print(f"coltman-images: log {LOG_FILE}")
@@ -476,6 +501,18 @@ def build_parser() -> argparse.ArgumentParser:
             "never; the server refuses a value below its boot cost"
         ),
     )
+    start.add_argument(
+        "--ui",
+        action="store_true",
+        help="also serve the web page, from the same process and the same queue",
+    )
+    start.add_argument(
+        "--ui-port",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"the page's loopback port when --ui is asked for (default {DEFAULT_UI_PORT})",
+    )
     start.set_defaults(handler=cmd_start)
 
     generate = commands.add_parser("generate", help="render one still through the running server")
@@ -507,6 +544,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "ui_port", None) is not None and not args.ui:
+        # A port for a page nobody asked for is a usage error, not a silent
+        # no-op: the flag would otherwise look like it did something (section 7).
+        parser.error("--ui-port needs --ui — the page is only served when it is asked for")
     return args.handler(args)
 
 

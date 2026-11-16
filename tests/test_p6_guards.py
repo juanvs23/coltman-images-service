@@ -28,13 +28,19 @@ it:
                                          determinism per value is part of it
     1 x 1024x576 POST, plus 2 servers    guard 16 (owns); the render must outlast
                                          the idle period it declares
+    2 x 1280x720 page submissions,    guard 13 (owns); both through the page's own
+      plus 1 server with --ui            client, against a server started with --ui,
+                                         because the page is where a second producer
+                                         would have to live
 
-That is thirteen stills. Guard 3 costs four by protocol; guard 9 costs two because
+That is fifteen stills. Guard 3 costs four by protocol; guard 9 costs two because
 concurrency cannot be borrowed; guard 10 costs one base render; the CLI still
 doubles as guard 7's second half; guard 15 costs four because two step counts
-must each be proved stable and then proved different. Nothing renders twice for
-the same guard. Guard 14 writes one more still, 256×256, and it is the stub's:
-no model is loaded for it.
+must each be proved stable and then proved different; guard 13 costs two because
+serialisation cannot be borrowed either, and it pays its own server because the
+shared one is started without `--ui` — the matrix must stay green on a server
+that never imports gradio. Nothing renders twice for the same guard. Guard 14
+writes one more still, 256×256, and it is the stub's: no model is loaded for it.
 
 Ordering is explicit, not incidental: methods are numbered because unittest runs
 them alphabetically, and guard 3 has to see the first render after `start`.
@@ -48,12 +54,14 @@ import filecmp
 import hashlib
 import json
 import pathlib
+import re
 import statistics
 import struct
 import subprocess
 import sys
 import threading
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -1054,8 +1062,194 @@ def _g15_entry(steps: int = PROTOCOL_DEFAULT_STEPS, name: str = "g15-entry.yaml"
     return path
 
 
+# --- guard 13: the UI is a surface, never a second renderer -----------------
+#
+# Three parts, because three parts are what can be observed without pinning
+# gradio's HTTP contract: the module cannot reach a model and cannot reach past
+# the seam (parsed, not trusted), the request builder maps the switch (no GPU),
+# and the queue is still single-flight *with the page mounted* — two submissions
+# fired through the page's own client, at guard 9's threshold.
+
+UI_PORT = 7860
+"""The page's default port (protocol sections 6 and 7)."""
+
+# Guard 13's two submissions go through the page's form, and the form has no size
+# field: SD is the entry's own defaults, whatever they are. That costs two
+# ~46 s renders rather than the ~25 s a 512x512 pair would, and it is the honest
+# shape — a page that accepted a size the entry does not declare would be shaping
+# a request the API could not have sent.
+
+G13_FORBIDDEN_IMPORTS = (
+    "diffusers",
+    "transformers",
+    "safetensors",
+    "coltman_images.loader",
+    "coltman_images.fp8",
+    "coltman_images.adapter",
+    "coltman_images.adapters",
+    "coltman_images.render",
+    "coltman_images.upscale",
+)
+"""Guard 13: what the UI must never reach. `coltman_images.adapters.*` matches by
+prefix, so an adapter module of the future is covered by the same entry; the
+declared stage is on the list because a page that ran it would be a second
+producer of synthesized pixels, which is the one thing the seam exists to stop."""
+
+G13_APP_ATTRIBUTES = frozenset({"submit", "depth", "entry", "declaration"})
+"""Guard 13: everything the page may read from the warm server it is handed.
+
+`WarmServer`'s public surface also carries `adapter` and the queue's own
+`_queue`/`_enqueue`, and reaching any of them from the page would be a producer
+outside the seam. The names are listed positively so a new attribute has to be
+declared here, in the law's vocabulary, before the page may use it."""
+
+G13_FORBIDDEN_SIZE_CONSTANTS = (1280, 720, 2560, 1440, 921600)
+"""The entry's numbers, which the page must not carry (roadmap P9 step 4).
+
+`limits.max_pixels` and `defaults` are per-entry, so a size written into the UI
+is a size the next entry inherits wrongly. The scan is on the parsed code, with
+arithmetic folded (`640 * 2` is 1280), on integral floats (`1280.0`), and on the
+non-docstring strings (`"1280x720"`); docstrings are prose, and that is where the
+current entry's numbers may legitimately appear.
+"""
+
+
+def _ui_imports(path: pathlib.Path) -> set[str]:
+    """Every module `path` imports, relative imports resolved to their package.
+
+    `_imported_modules` skips relative imports because they stay inside the
+    package by construction — true for guard 8, and useless here: `from . import
+    render` is exactly the coupling this guard exists to refuse.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level == 1:
+                module = f"coltman_images.{module}" if module else "coltman_images"
+            elif node.level > 1:
+                module = f"coltman_images.{'pkg.' * (node.level - 1)}{module}".rstrip(".")
+            names.add(module)
+            names.update(f"{module}.{alias.name}" for alias in node.names)
+    return names
+
+
+def _ui_forbidden(imports: set[str]) -> list[str]:
+    """The imports of `ui.py` that reach the model stack, by exact name or prefix."""
+    found: list[str] = []
+    for name in sorted(imports):
+        for needle in G13_FORBIDDEN_IMPORTS:
+            if name == needle or name.startswith(needle + "."):
+                found.append(name)
+                break
+    return found
+
+
+def _ui_calls(tree: ast.AST, attribute: str) -> bool:
+    """Does the parsed module call `something.<attribute>(...)` anywhere?"""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == attribute:
+            return True
+        if isinstance(func, ast.Name) and func.id == attribute:
+            return True
+    return False
+
+
+def _ui_app_attributes(tree: ast.AST) -> set[str]:
+    """Every attribute the module reads from the name `app`, methods included.
+
+    The page is handed the whole `WarmServer`, so "it calls submit()" is not the
+    boundary on its own: `app.adapter.encode(...)` or `app._enqueue(...)` would
+    both satisfy that and neither is the seam. What the page may touch is a closed
+    list (protocol section 5.5), and this is the scan that closes it.
+    """
+    return {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "app"
+    }
+
+
+def _is_forbidden_size(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return any(abs(float(value) - needle) < 1e-9 for needle in G13_FORBIDDEN_SIZE_CONSTANTS)
+    return False
+
+
+def _ui_size_literals(tree: ast.AST) -> list[object]:
+    """The entry's sizes written into the parsed module, arithmetic folded.
+
+    Three ways a size arrives in code and only one of them is a bare int, so all
+    three are read: a constant (`1280`), a folded expression (`640 * 2`, `1280.0`
+    after `/ 1`), and a string (``"1280x720"``). Docstrings are excluded through
+    `_literal_strings`, which is the same rule guards 8, 11 and 14 use: prose is
+    not a coupling.
+    """
+    found: list[object] = []
+
+    def folded(node: ast.AST) -> float | int | None:
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, (int, float))
+            and not isinstance(node.value, bool)
+        ):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            inner = folded(node.operand)
+            return None if inner is None else -inner
+        if isinstance(node, ast.BinOp):
+            left, right = folded(node.left), folded(node.right)
+            if left is None or right is None:
+                return None
+            try:
+                if isinstance(node.op, ast.Mult):
+                    return left * right
+                if isinstance(node.op, ast.Add):
+                    return left + right
+                if isinstance(node.op, ast.Sub):
+                    return left - right
+                if isinstance(node.op, ast.Div):
+                    return left / right
+                if isinstance(node.op, ast.FloorDiv):
+                    return left // right
+            except ZeroDivisionError:
+                return None
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and _is_forbidden_size(node.value):
+            found.append(node.value)
+        elif isinstance(node, ast.BinOp):
+            value = folded(node)
+            if value is not None and _is_forbidden_size(value):
+                found.append(value)
+    for _line, text in _literal_strings(tree):
+        for needle in G13_FORBIDDEN_SIZE_CONSTANTS:
+            if str(needle) in text:
+                found.append(text)
+                break
+    return sorted(set(found), key=str)
+
+
+def _ui_page(port: int, path: str = "/") -> tuple[int, str, bytes]:
+    """GET the page. (0, "", b"") when nothing answers — the refusal is the answer."""
+    try:
+        with urllib.request.urlopen(f"http://{BIND}:{port}{path}", timeout=10.0) as response:
+            return int(response.status), response.headers.get("Content-Type", ""), response.read()
+    except (urllib.error.URLError, OSError):
+        return 0, "", b""
+
+
 class ServiceCase(GuardCase):
-    """One shared server for the class, stopped by guard 2; guard 16 starts its own."""
+    """One shared server for the class, stopped by guard 2; guards 16 and 13 start theirs."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -2057,6 +2251,468 @@ class ServiceCase(GuardCase):
         _put("guard16.stop_after", {"exit": again.returncode, "stdout": again.stdout})
         self.assertEqual(again.returncode, 0, f"stopping a retired server must exit 0: {again.stderr}")
         self.assertEqual(_server_pids(), [], "a no-op stop started a process")
+
+
+    # --- 14: guard 13 owns the page, and it runs last -----------------------
+
+    def test_0960_guard13_ui_never_renders_outside_the_queue(self) -> None:
+        """Guard 13: the page is a surface on the seam, never a second renderer.
+
+        Three parts, because three parts are what can be observed without driving
+        gradio's own protocol — the UI's HTTP contract is not this project's to
+        pin — plus the status line, which needs neither gradio nor a card:
+
+        1. **Structural.** `coltman_images/ui.py` is parsed and may import nothing
+           from the model stack — not the encoder, not the adapter, not the render
+           core, not the declared stage — and it may carry none of the entry's
+           numbers, so the SD/HD switch cannot inherit 1280x720 into a different
+           entry. Arithmetic is folded, so `640 * 2` is read as 1280. It is handed
+           the whole `WarmServer`, so the scan also closes the boundary from the
+           other side: every attribute it reads from `app` must be one of
+           `submit`, `depth`, `entry` and `declaration`. The positive control is
+           that it does call `submit(`: a module that reached neither the seam nor
+           the model would pass the rest vacuously. The same scan over the Z-Image
+           adapter must find what the blacklist forbids, which is what shows the
+           scan can find anything at all.
+        2. **Unit.** `request_from_form` maps the switch: SD is the entry's own
+           defaults with no permission, HD is a size above that entry's ceiling
+           and inside what the stage can serve — asserted as a property, on an
+           entry whose defaults do **not** sit at its ceiling.
+        3. **Behavioural.** The server is started with `--ui`, the page answers
+           HTML on its own port, and two submissions fired **through the page**
+           (gradio's own client, the same endpoint the button calls) serialise by
+           a whole render at guard 9's 1.5x — with each one reporting its first
+           status within seconds, so a page that queueed in front of the seam
+           fails here rather than passing. `stop` takes the page down with the
+           process.
+
+        The status line and the three failure sentences are asserted beside the
+        unit half: a request behind another one must say so — the depth is the
+        only thing that tells an operator the page is waiting rather than hung —
+        and a refusal, a failed render and a stopping server must each say which
+        they were, not be flattened into "refused".
+
+        It runs after guard 2 has stopped the shared server and after guard 16,
+        and it pays its own boot: the shared fixture is started **without**
+        `--ui`, because the matrix must stay green on a server that imports
+        nothing from gradio.
+        """
+        # 0. One instance per card (guard 12). Under `-k guard13` the fixture's
+        #    shared server is still up, so it goes first.
+        if _state() is not None or _server_pids():
+            cleared = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and (_state() is not None or _server_pids()):
+                time.sleep(0.5)
+            self.assertEqual(_server_pids(), [], f"the shared server would not stop: {cleared.stderr}")
+            self.assertIsNone(_state(), "the shared server left its state file behind")
+
+        # 1. Structural — the parsed module, not the prose around it.
+        ui_source = ROOT / "coltman_images" / "ui.py"
+        self.assertTrue(ui_source.is_file(), f"{ui_source} does not exist")
+        tree = ast.parse(ui_source.read_text(encoding="utf-8"), filename=str(ui_source))
+        imports = _ui_imports(ui_source)
+        forbidden = _ui_forbidden(imports)
+        calls_submit = _ui_calls(tree, "submit")
+        app_attributes = _ui_app_attributes(tree)
+
+        # Not vacuous: the same scan over the file that does the coupling.
+        adapter_source = ROOT / "coltman_images" / "adapters" / "zimage.py"
+        adapter_forbidden = _ui_forbidden(_ui_imports(adapter_source))
+
+        size_constants = _ui_size_literals(tree)
+
+        # 2. Unit — the switch, on a synthetic entry and on the real declaration.
+        from coltman_images import ui as ui_module
+
+        # The stub's ceiling is deliberately **not** its defaults' area, and low
+        # enough that multiplying the defaults by the factor would still sit under
+        # it — so a page that multiplied instead of deriving fails the assertion
+        # below on this entry. The sub-assertion in 13b keeps the fixture
+        # discriminating, because an entry whose defaults sit at its ceiling would
+        # let the multiplication pass.
+        stub = types.SimpleNamespace(
+            defaults={"width": 256, "height": 256, "format": "png"},
+            max_pixels=300000,
+        )
+        factor = 2
+        stub_sd = ui_module.request_from_form("a thing that is not a lighthouse", 11, False, stub, factor)
+        stub_hd = ui_module.request_from_form("a thing that is not a lighthouse", 11, True, stub, factor)
+        stub_absent_seed = ui_module.request_from_form("a thing that is not a lighthouse", None, False, stub, factor)
+
+        # The real numbers, read as a declaration rather than resolved: a full
+        # `load_entry` would hash 6.29 GB for a fact this guard only needs to
+        # compare, and guard 4 already owns the resolution.
+        declaration = yaml.safe_load((ROOT / "model" / "entry.yaml").read_text(encoding="utf-8"))
+        stage = yaml.safe_load((ROOT / "model" / "upscaler.yaml").read_text(encoding="utf-8"))
+        real = types.SimpleNamespace(
+            defaults=dict(declaration["defaults"]),
+            max_pixels=int(declaration["limits"]["max_pixels"]),
+        )
+        real_factor = int(stage["scale"])
+        real_hd = ui_module.request_from_form("a lighthouse at dusk", 7, True, real, real_factor)
+
+        # The status line carries the queue depth while it waits — the roadmap's
+        # "a 46 s request behind another one must not look like a hang" — and a
+        # failure is reported by what actually happened. Pure Python: a stand-in
+        # app whose `submit` blocks or raises, so the generator is exercised with
+        # no gradio, no GPU and no server.
+        class InvalidRequest(Exception):
+            """The seam's refusal: refused before any GPU work (HTTP 400)."""
+
+        class RenderFailed(Exception):
+            """The seam's failure: accepted, then the render raised (HTTP 500)."""
+
+        class ServerError(Exception):
+            """The seam's unavailability: the server is stopping and took nothing."""
+
+        class _Waiting:
+            """A stand-in for the warm server: one queued request, one response."""
+
+            entry = stub
+            declaration = None
+
+            def __init__(self) -> None:
+                self.error: BaseException | None = None
+
+            def depth(self) -> int:
+                return 1
+
+            def submit(self, request: dict) -> dict:
+                time.sleep(0.15)
+                if self.error is not None:
+                    raise self.error
+                return {
+                    "out": "/nowhere/stub.png",
+                    "steps": 1,
+                    "seed": request.get("seed", 0),
+                    "width": request["width"],
+                    "height": request["height"],
+                    "model": "stub",
+                    "census": {},
+                    "duration_s": 0.2,
+                    "render_s": 0.1,
+                    "load_s": 0.05,
+                    "upscale": None,
+                }
+
+        waiting = _Waiting()
+        updates = list(ui_module.generate(waiting, "a thing", 11, False))
+        statuses = [update for update in updates if isinstance(update, str)]
+        failures: dict[str, list] = {}
+        for error_class in (InvalidRequest, RenderFailed, ServerError):
+            waiting.error = error_class("the seam said so")
+            failures[error_class.__name__] = list(ui_module.generate(waiting, "a thing", 11, False))
+        waiting.error = None
+
+        _put(
+            "guard13",
+            {
+                "structural": {
+                    "source": str(ui_source.relative_to(ROOT)),
+                    "imports": sorted(imports),
+                    "forbidden": forbidden,
+                    "calls_submit": calls_submit,
+                    "app_attributes": sorted(app_attributes),
+                    "size_constants": size_constants,
+                    "control_file": str(adapter_source.relative_to(ROOT)),
+                    "control_forbidden": adapter_forbidden,
+                },
+                "unit": {
+                    "stub": {"sd": stub_sd, "hd": stub_hd, "absent_seed": stub_absent_seed, "factor": factor},
+                    "real": {
+                        "defaults": real.defaults,
+                        "max_pixels": real.max_pixels,
+                        "factor": real_factor,
+                        "hd": real_hd,
+                    },
+                    "waiting": {
+                        "statuses": statuses,
+                        "result": updates[-1] if updates else None,
+                        "failures": {name: values[-1] if values else None for name, values in failures.items()},
+                    },
+                },
+            },
+        )
+
+        print(
+            f"guard 13: {ui_source.name} parsed — {len(imports)} imports, "
+            f"{len(forbidden)} reaching the model stack; calls submit() = {calls_submit}; "
+            f"app attributes {sorted(app_attributes)}; "
+            f"{len(size_constants)} entry sizes written in code"
+        )
+        print(
+            f"guard 13: the same scan finds {len(adapter_forbidden)} forbidden imports in "
+            f"{adapter_source.name} — {adapter_forbidden}"
+        )
+        print(
+            f"guard 13: SD {stub_sd} · HD {stub_hd} on a {stub.defaults['width']}x"
+            f"{stub.defaults['height']} entry with a {stub.max_pixels} px ceiling"
+        )
+        waiting_status = statuses[0] if statuses else "(nothing)"
+        print(
+            f"guard 13: the real entry gives SD {real.defaults['width']}x{real.defaults['height']} "
+            f"and HD {real_hd['width']}x{real_hd['height']} above its {real.max_pixels} px ceiling"
+        )
+        print(f"guard 13: while one request waits the status says {waiting_status!r}")
+        for name, values in failures.items():
+            last = values[-1] if values else "(nothing)"
+            print(f"guard 13: a {name} is reported as {str(last)[:70]!r}")
+
+        with self.subTest(part="13a: the UI reaches no model"):
+            self.assertEqual(
+                forbidden,
+                [],
+                f"{ui_source.name} reaches the model stack: {forbidden}",
+            )
+            self.assertTrue(calls_submit, f"{ui_source.name} calls no submit(): the scan proved nothing")
+            self.assertGreaterEqual(
+                len(adapter_forbidden),
+                3,
+                f"the scan found nothing in {adapter_source.name} either, so it cannot find anything: "
+                f"{adapter_forbidden}",
+            )
+
+        with self.subTest(part="13a: the UI touches only the seam"):
+            self.assertEqual(
+                sorted(app_attributes - G13_APP_ATTRIBUTES),
+                [],
+                f"{ui_source.name} reaches past the seam into {sorted(app_attributes - G13_APP_ATTRIBUTES)}; "
+                f"the page may read {sorted(G13_APP_ATTRIBUTES)} and nothing else",
+            )
+
+        with self.subTest(part="13a: the UI carries no entry size"):
+            self.assertEqual(
+                size_constants,
+                [],
+                f"{ui_source.name} writes the entry's sizes into the page: {size_constants}",
+            )
+
+        with self.subTest(part="13b: the switch maps to the entry"):
+            self.assertEqual(stub_sd["width"], stub.defaults["width"])
+            self.assertEqual(stub_sd["height"], stub.defaults["height"])
+            self.assertNotIn("upscale", stub_sd, "SD asked for the stage")
+            self.assertIn("seed", stub_sd)
+            self.assertNotIn("seed", stub_absent_seed, "an absent seed must let the server pick one")
+
+            naive = (stub.defaults["width"] * factor, stub.defaults["height"] * factor)
+            self.assertLessEqual(
+                naive[0] * naive[1],
+                stub.max_pixels,
+                "this fixture cannot tell a derivation from a multiplication: its defaults x factor "
+                f"({naive[0]}x{naive[1]}) already clears its {stub.max_pixels} px ceiling",
+            )
+
+            # The property, not the multiplication: HD is above the entry's ceiling
+            # and inside what the stage can serve, on an entry whose defaults do
+            # *not* sit at that ceiling.
+            for label, entry, factor_used, request in (
+                ("stub", stub, factor, stub_hd),
+                ("real", real, real_factor, real_hd),
+            ):
+                area = request["width"] * request["height"]
+                cap = entry.max_pixels * factor_used * factor_used
+                self.assertIs(request.get("upscale"), True, f"{label}: HD did not permit the stage")
+                self.assertGreater(
+                    area,
+                    entry.max_pixels,
+                    f"{label}: HD {request['width']}x{request['height']} is not above the "
+                    f"{entry.max_pixels} px ceiling, so a native render would be labelled HD",
+                )
+                self.assertLessEqual(
+                    area,
+                    cap,
+                    f"{label}: HD {request['width']}x{request['height']} is beyond the {cap} px the "
+                    "declared stage can serve, so every HD submission would be refused",
+                )
+                self.assertEqual(request["width"] % 16, 0, f"{label}: HD width is not a multiple of 16")
+                self.assertEqual(request["height"] % 16, 0, f"{label}: HD height is not a multiple of 16")
+                self.assertGreaterEqual(request["width"], 256, f"{label}: HD width is below 256")
+                self.assertGreaterEqual(request["height"], 256, f"{label}: HD height is below 256")
+
+        with self.subTest(part="13c: the status line and the failures"):
+            # The generator's halves, with no gradio and no card: it reports the
+            # depth while the seam blocks, and it says which of the three things
+            # happened instead of calling every failure a refusal.
+            self.assertTrue(statuses, "generate yielded no status while the seam was busy")
+            self.assertIn(
+                "queue depth 1",
+                statuses[0],
+                f"a request behind another one shows {statuses[0]!r} — it would look like a hang",
+            )
+            self.assertIsInstance(updates[-1], dict, "generate did not end with the response object")
+            self.assertEqual(updates[-1]["out"], "/nowhere/stub.png")
+
+            for name, values in failures.items():
+                self.assertTrue(values, f"generate yielded nothing for a {name}")
+                self.assertIsInstance(values[-1], str, f"a {name} reached the page as an exception")
+                self.assertIn(name, values[-1], f"the {name} sentence does not name the class: {values[-1]}")
+            self.assertIn("refused", failures["InvalidRequest"][-1], "a refusal is not called a refusal")
+            self.assertIn("render failed", failures["RenderFailed"][-1], "a failed render is not called one")
+            self.assertIn("not accepting work", failures["ServerError"][-1], "a stopping server is not named")
+            self.assertEqual(
+                len({values[-1].split(" — ")[0] for values in failures.values()}),
+                3,
+                "two of the three failures share a sentence, so at least one of them is a lie",
+            )
+
+        # 3. Behavioural — the page mounted, and the queue still single-flight.
+        page_status, page_type, page_was = _ui_page(UI_PORT)
+        self.assertEqual(
+            page_status,
+            0,
+            f"{BIND}:{UI_PORT} already answers ({page_status}) before the guard started anything — "
+            "free it first, or the guard would be measuring somebody else's page",
+        )
+
+        started = _cli("start", "--ui", timeout=600)
+        print(f"guard 13: start --ui → exit {started.returncode}; {started.stdout.strip()}")
+        _put("guard13.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
+        self.assertEqual(started.returncode, 0, f"start --ui failed: {started.stderr}")
+        self.assertIn(
+            f"ui http://{BIND}:{UI_PORT}",
+            started.stdout,
+            "start did not echo the page's address on its success line",
+        )
+        status, health = _health()
+        self.assertEqual(status, 200, f"/health did not answer: {health}")
+        pid = health.get("pid")
+        self.assertEqual(_server_pids(), [pid], "one start, one process")
+
+        page_status, page_type, page = _ui_page(UI_PORT)
+        _put(
+            "guard13.page",
+            {
+                "status": page_status,
+                "content_type": page_type,
+                "bytes": len(page),
+                "head": page[:300].decode("utf-8", "replace"),
+            },
+        )
+        print(f"guard 13: page on {BIND}:{UI_PORT} → {page_status} {page_type}, {len(page)} bytes")
+        self.assertEqual(page_status, 200, "the page did not answer on its own port")
+        self.assertIn("text/html", page_type, f"the page answered {page_type!r}")
+        self.assertGreater(len(page), 1024, "the page answered with an empty document")
+
+        # Two submissions **through the page**, not through the API. The API pair
+        # would stay serialised even if the page reached `app.adapter` or
+        # `app._queue` behind its back, which is the failure this half exists to
+        # catch; these two enter where a browser enters.
+        from gradio_client import Client
+
+        seeds = {"A": 71, "B": 72}
+        barrier = threading.Barrier(2)
+        results: dict[str, dict] = {}
+        depths: list[int] = []
+        stop_polling = threading.Event()
+
+        def fire(label: str) -> None:
+            client = Client(f"http://{BIND}:{UI_PORT}/", verbose=False, download_files=None)
+            barrier.wait()
+            began = time.perf_counter()
+            first_status_after = None
+            panel = ""
+            updates = 0
+            job = client.submit("a brass compass on a wooden table", seeds[label], "SD", api_name="/generate")
+            for update in job:
+                if updates == 0:
+                    first_status_after = round(time.perf_counter() - began, 3)
+                updates += 1
+                if isinstance(update, (list, tuple)) and len(update) >= 3 and isinstance(update[2], str):
+                    panel = update[2] or panel
+            results[label] = {
+                "wall_s": round(time.perf_counter() - began, 3),
+                "first_status_after_s": first_status_after,
+                "updates": updates,
+                "panel": panel,
+            }
+
+        def poll() -> None:
+            while not stop_polling.is_set():
+                code, body = _health()
+                if code == 200:
+                    depths.append(int(body.get("queue", {}).get("depth", -1)))
+                stop_polling.wait(0.5)
+
+        poller = threading.Thread(target=poll, name="p13-depth", daemon=True)
+        workers = [threading.Thread(target=fire, args=(label,), name=f"p13-{label}") for label in seeds]
+        poller.start()
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=HTTP_TIMEOUT_S + 120)
+        stop_polling.set()
+        poller.join(timeout=10)
+
+        walls = {label: float(result["wall_s"]) for label, result in results.items()}
+        peak = max(depths) if depths else -1
+        _put(
+            "guard13.behaviour",
+            {
+                "seeds": seeds,
+                "results": results,
+                "peak_queue_depth": peak,
+                "depth_samples": len(depths),
+                "pids": _server_pids(),
+            },
+        )
+        print(
+            f"guard 13: two submissions through the page — wall {walls['A']:.3f} / {walls['B']:.3f} s, "
+            f"ratio {max(walls.values()) / min(walls.values()):.3f} (separator {SERIAL_RATIO}); "
+            f"first status after {results['A']['first_status_after_s']} / "
+            f"{results['B']['first_status_after_s']} s; peak queue depth {peak} over {len(depths)} samples"
+        )
+
+        self.assertEqual(sorted(results), ["A", "B"], "a concurrent page submission never returned")
+        expected = (int(real.defaults["width"]), int(real.defaults["height"]))
+        for label, result in results.items():
+            self.assertIn(
+                f"**SD** — {expected[0]}x{expected[1]}",
+                result["panel"],
+                f"submission {label}'s page panel does not state what was delivered: {result['panel'][:200]!r}",
+            )
+            self.assertIn("census —", result["panel"], f"submission {label} showed no census")
+            still = re.search(r"written to `([^`]+)`", result["panel"])
+            self.assertIsNotNone(still, f"submission {label}'s panel names no file: {result['panel'][:200]!r}")
+            written = pathlib.Path(still.group(1))
+            self.assertTrue(written.is_file(), f"the page said {written} and it is not there")
+            self.assertEqual(
+                _png_size(written),
+                expected,
+                f"{written} is not the size the entry's defaults declare ({expected[0]}x{expected[1]})",
+            )
+            # The page does not queue in front of the seam: both submissions were
+            # being reported on within seconds of the click, not after the other
+            # one's render. This is the observable the page's own queue broke.
+            self.assertIsNotNone(result["first_status_after_s"], f"submission {label} showed no status")
+            self.assertLessEqual(
+                float(result["first_status_after_s"]),
+                10.0,
+                f"submission {label} waited {result['first_status_after_s']} s before its first status: "
+                "the page is queueing in front of the seam",
+            )
+        self.assertGreaterEqual(
+            max(walls.values()) / min(walls.values()),
+            SERIAL_RATIO,
+            f"the two page submissions did not serialise ({walls['A']:.3f} s and {walls['B']:.3f} s): "
+            "a second worker would overlap them",
+        )
+        self.assertEqual(_server_pids(), [pid], "a second server process appeared while the page was up")
+
+        # 4. The page shares the process's life: `stop` takes it down too.
+        stopped = _cli("stop", timeout=180)
+        print(f"guard 13: stop → exit {stopped.returncode}, {stopped.stdout.strip()!r}")
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline:
+            if _health()[0] != 200 and _ui_page(UI_PORT)[0] != 200 and not STATE_FILE.exists() and not _server_pids():
+                break
+            time.sleep(0.5)
+        page_after = _ui_page(UI_PORT)[0]
+        _put("guard13.stop", {"exit": stopped.returncode, "page_status_after": page_after, "stdout": stopped.stdout})
+        self.assertEqual(stopped.returncode, 0, f"stop failed: {stopped.stderr}")
+        self.assertNotEqual(page_after, 200, "the page still answers after stop")
+        self.assertFalse(STATE_FILE.exists(), "run/server.json survived stop")
+        self.assertEqual(_server_pids(), [], "a server process survived stop")
 
 
 # --- the fixture's raw steps -----------------------------------------------

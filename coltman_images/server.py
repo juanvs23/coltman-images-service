@@ -38,6 +38,13 @@ This module does not re-derive any of those decisions: it validates at the door,
 enqueues, and calls `render.render` with the warm adapter it built at boot. The
 sequencing that used to be mirrored here is gone: one worker, one adapter, one
 implementation.
+
+The web UI (P9) is a second surface of the same process, not a second
+implementation: `--ui` brings `coltman_images/ui.py` up on its own port and its
+own thread, holding this same `WarmServer` and calling the same
+`submit(request)` seam the HTTP handler calls. Gradio is imported inside that
+branch and never at module scope, so a server started without the flag is exactly
+the stdlib service it was before (protocol sections 5.5 and 6).
 """
 
 from __future__ import annotations
@@ -72,6 +79,15 @@ BIND = "127.0.0.1"
 """The only interface this server binds (protocol section 5.2). Not a flag."""
 
 DEFAULT_PORT = 8420
+
+DEFAULT_UI_PORT = 7860
+"""The web UI's own port, beside the API's 8420 (protocol section 6).
+
+The two never share a socket: the API stays a stdlib `http.server` on the main
+thread, and gradio brings its own server in a second thread. The UI is off by
+default — `--ui` asks for it — so a server without the flag imports nothing from
+gradio and behaves exactly as it did before P9.
+"""
 
 RUN_DIR = PROJECT_ROOT / "run"
 STATE_FILE = RUN_DIR / "server.json"
@@ -191,6 +207,7 @@ class WarmServer:
         self._stopping = False
         self._worker: threading.Thread | None = None
         self._httpd: ThreadingHTTPServer | None = None
+        self._ui: Any = None
         self._shutdown_requested = threading.Event()
         self._stop_thread: threading.Thread | None = None
         self._warm_s = 0.0
@@ -461,11 +478,20 @@ class WarmServer:
 
     # --- lifecycle ----------------------------------------------------------
 
-    def serve(self, port: int, idle_timeout: float | None = None) -> None:
+    def serve(
+        self,
+        port: int,
+        idle_timeout: float | None = None,
+        ui_port: int | None = None,
+    ) -> None:
         """Bind, write the state, then serve until shutdown. Blocks.
 
         `idle_timeout` is the operator's declared idle period, in seconds.
         `None` — the default — means the server never retires on its own.
+
+        `ui_port` brings the web UI up beside the API in its own thread; `None`
+        — the default — means no page and no gradio import at all. The API keeps
+        `serve_forever` on the main thread either way.
         """
         self.port = port
         self._idle_timeout = None if idle_timeout is None else float(idle_timeout)
@@ -500,6 +526,16 @@ class WarmServer:
                 "idle: declared %.1f s — the server retires on its own when nothing is in flight",
                 self._idle_timeout,
             )
+        if ui_port is not None:
+            # The page comes up before the API starts serving, so a failure here
+            # is a refusal of the whole start rather than a server that answers
+            # without the surface it was asked for.
+            try:
+                self._start_ui(ui_port)
+            except ServerError:
+                self._remove_state()
+                httpd.server_close()
+                raise
         httpd.serve_forever(poll_interval=0.2)
         # `serve_forever` returns as soon as a shutdown was requested, which is
         # *before* the drain finishes. The watcher owns the drain and exits the
@@ -509,6 +545,55 @@ class WarmServer:
             self._stop_thread.join()
         self._release()
         self._remove_state()
+
+    def _start_ui(self, ui_port: int) -> None:
+        """Bring the page up beside the API, in its own thread, on its own port.
+
+        The page module and gradio are imported here, and `main()` imports gradio
+        once before this is reached — for the capability check, so a missing
+        `--ui` dependency is exit 3 before the mutex. Both of those happen inside
+        the `--ui` branch: a server started without the flag never imports gradio,
+        so the API stays a stdlib `http.server` service and the flag is the only
+        thing that costs (protocol section 6).
+
+        `prevent_thread_lock=True` is what keeps the API alive: `serve_forever`
+        owns the main thread, and gradio hands its uvicorn server a background
+        thread and returns. Without it `launch()` would block here and the port
+        this process was started for would never accept a request.
+
+        The page holds this same `WarmServer` and calls `submit()` — not the API
+        over HTTP. A second client would be a second place where a request can be
+        shaped, and one producer is the rule (section 9, rule 8).
+
+        Gradio's file cache and its telemetry are pointed by the two environment
+        variables `main()` sets before importing it: the cache under `run/ui/`,
+        inside the tree, and the telemetry off, because a runtime request to
+        `api.gradio.app` or `huggingface.co` would break section 2.
+        """
+        import gradio
+
+        from . import ui as ui_module
+
+        try:
+            page = ui_module.build(self)
+            page.launch(
+                server_name=BIND,
+                server_port=ui_port,
+                prevent_thread_lock=True,
+                show_error=True,
+                quiet=True,
+            )
+        except OSError as exc:
+            # A port another process holds is the operator's mistake, not a
+            # broken server: the message names the port and the start is refused.
+            raise ServerError(f"ui: {BIND}:{ui_port}: {exc}") from exc
+        self._ui = page
+        logger.info(
+            "ui: serving http://%s:%d — gradio %s, the same queue as the API",
+            BIND,
+            ui_port,
+            gradio.__version__,
+        )
 
     def request_shutdown(self) -> None:
         """Ask the watcher to drain, release and exit (POST /shutdown, signals)."""
@@ -842,6 +927,20 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
+        "--ui",
+        action="store_true",
+        help=(
+            "serve the web UI from this process, on its own port and thread, calling "
+            "the same submission seam the API calls"
+        ),
+    )
+    parser.add_argument(
+        "--ui-port",
+        type=int,
+        default=None,
+        help=f"the UI's loopback port when --ui is asked for (default {DEFAULT_UI_PORT})",
+    )
+    parser.add_argument(
         "--idle-timeout",
         type=float,
         default=None,
@@ -882,6 +981,50 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_INVALID_REQUEST
 
+    # The UI is a declared capability, and a declared capability that is absent
+    # is an undeclared thing — exit 3, before the mutex and long before a weight
+    # is loaded. The import is here, inside this branch, so a server started
+    # without `--ui` never touches gradio (protocol section 6).
+    #
+    # `--ui-port` without `--ui` is a usage error and not a silent no-op: a flag
+    # that declares nothing must not look like it did something.
+    if args.ui_port is not None and not args.ui:
+        logger.error(
+            "ui: --ui-port names a port for a page that was not asked for; add --ui — "
+            "nothing was loaded"
+        )
+        return EXIT_INVALID_REQUEST
+    ui_port: int | None = None
+    if args.ui:
+        ui_port = DEFAULT_UI_PORT if args.ui_port is None else args.ui_port
+        if not 1 <= ui_port <= 65535:
+            logger.error("ui: port %d is outside 1..65535 — nothing was loaded", ui_port)
+            return EXIT_SERVER_UNAVAILABLE
+        if ui_port == args.port:
+            logger.error(
+                "ui: port %d is the API's port — the two surfaces never share a socket; "
+                "pass a different --ui-port — nothing was loaded",
+                ui_port,
+            )
+            return EXIT_INVALID_REQUEST
+        # Both of these are set before gradio is imported and are assigned, not
+        # defaulted, so an exported variable in the operator's shell cannot move
+        # them: the page's file cache stays inside `run/` and its telemetry stays
+        # off (protocol section 2 — no runtime lookup may point outside this tree).
+        os.environ["GRADIO_TEMP_DIR"] = str(RUN_DIR / "ui")
+        os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+        try:
+            import gradio  # noqa: F401 — asked for, and must be there
+        except Exception as exc:  # noqa: BLE001 — reported as the missing asset it is
+            logger.error(
+                "ui: --ui was asked for and gradio is not importable (%s: %s) — install it "
+                "into the project's own interpreter with `.venv/bin/pip install gradio`; "
+                "nothing was loaded",
+                type(exc).__name__,
+                exc,
+            )
+            return EXIT_ASSET_MISSING
+
     # The mutex comes before any model work. The boot order is load, warm up,
     # then bind, so a second process would exhaust the card *before* the port
     # could refuse it — the bind is far too late to be the guard.
@@ -904,12 +1047,12 @@ def main(argv: list[str] | None = None) -> int:
                 others[0],
             )
             return EXIT_SERVER_UNAVAILABLE
-        return _serve(args)
+        return _serve(args, ui_port)
     finally:
         _release_instance_lock(lock)
 
 
-def _serve(args: argparse.Namespace) -> int:
+def _serve(args: argparse.Namespace, ui_port: int | None = None) -> int:
     app = WarmServer()
     try:
         app.boot()
@@ -928,7 +1071,7 @@ def _serve(args: argparse.Namespace) -> int:
         signal.signal(sig, _signal)
 
     try:
-        app.serve(port=args.port, idle_timeout=args.idle_timeout)
+        app.serve(port=args.port, idle_timeout=args.idle_timeout, ui_port=ui_port)
     except ServerError as exc:
         logger.error("%s", exc)
         return EXIT_SERVER_UNAVAILABLE
