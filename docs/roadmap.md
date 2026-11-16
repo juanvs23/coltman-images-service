@@ -100,12 +100,13 @@ The second half of the original question — whether FP8 invents more than INT8 
 
 Deferred because the operator's decision was open. Closed when the operator ordered version control: the repository exists, `git init` ran in the project root, and the first commit carries the state as it stood when the debt closed. No history was invented before it, and the ignore file keeps the weights, the venv, the run state and the test evidence out of the repository.
 
-### `[DEBT] no-idle-timeout`
+### `[DEBT] no-idle-timeout` — closed 2026-11-16
 
-The server never self-terminates, so a forgotten server keeps a process and its port indefinitely — and, measured on 2026-11-15, about 165 MiB: 770 MiB with the server idle against 605 without it. It does **not** hold the card; the GPU is free between requests. Justified because auto-stop changes the meaning of "warm" and the cost of the next request.
+The server never self-terminated, so a forgotten server kept a process and its port indefinitely — and, measured on 2026-11-15, about 165 MiB: 770 MiB with the server idle against 605 without it. It did **not** hold the card; the GPU is free between requests. Justified because auto-stop changes the meaning of "warm" and the cost of the next request.
 
 - Target spec: an `--idle-timeout` option that releases the process and the port after a declared idle period. There is no GPU to release.
 - Steps: the boot cost is already measured — 15.1 s, of which 11.0 s is the discarded warm-up — so declare the option against that number.
+- Closed by: `start --idle-timeout SECONDS`, declared in protocol sections 5.1, 5.4, 6 and 7, with the default unchanged — absent the option the server still never self-terminates, so nothing moves for an operator who does not ask for it. The floor is that measured 15.1 s, refused at the door with exit 2 before any work, because a server that idles for less than it takes to start is worse than no server. **Idle means no request in flight and none queued**, and the period counts from the moment the server *becomes* idle: an earlier draft counted it from the moment a request was accepted, and the first end-to-end run retired the server 0.05 s after a 45 s render instead of 16 s after it — the render's own duration had eaten the period. Guard 16 proves the three halves: a period below the floor is refused and starts nothing; a 28.366 s render against a 16 s period answers 200 with its still rather than being cut; and the server then retires on its own through the path `stop` uses, leaving no port, no state file and no process — port silent, `run/server.json` removed, process gone, the reason in its own log. The option is idempotent as `--port` is: a differing period on a running server is reported on stderr and ignored. Evidence in `tests/e2e/idle-timeout/`.
 
 ### `[DEBT] server-mirrors-render-sequencing` — closed 2026-11-15
 

@@ -12,8 +12,10 @@ half of guard 4), and writes a synthetic entry for a stub adapter, loads it and
 renders it in a child process (guard 14). It costs seconds.
 
 `ServiceCase` needs the live service, so it owns its lifecycle: one server, started
-once in `setUpClass` and stopped by the last test, which is guard 2's own
-assertion. Every render it makes is listed here with the guard that owns it:
+once in `setUpClass` and stopped by guard 2's own test. Guard 16 runs after it
+and starts servers of its own, because the instance mutex allows one at a time
+(guard 12). Every render the class makes is listed here with the guard that owns
+it:
 
     renders                              guard
     4 x 1280x720 POST, same prompt/seed  guard 3 (owns); guard 5 borrows the bytes
@@ -24,8 +26,10 @@ assertion. Every render it makes is listed here with the guard that owns it:
     1 x 2560x1440 POST with upscale      guard 10 (owns)
     4 x 512x512 POST, 8/8/12/12 steps    guard 15 (owns); each value twice, because
                                          determinism per value is part of it
+    1 x 1024x576 POST, plus 2 servers    guard 16 (owns); the render must outlast
+                                         the idle period it declares
 
-That is twelve stills. Guard 3 costs four by protocol; guard 9 costs two because
+That is thirteen stills. Guard 3 costs four by protocol; guard 9 costs two because
 concurrency cannot be borrowed; guard 10 costs one base render; the CLI still
 doubles as guard 7's second half; guard 15 costs four because two step counts
 must each be proved stable and then proved different. Nothing renders twice for
@@ -1051,7 +1055,7 @@ def _g15_entry(steps: int = PROTOCOL_DEFAULT_STEPS, name: str = "g15-entry.yaml"
 
 
 class ServiceCase(GuardCase):
-    """One server for the whole class; guard 2's own test stops it at the end."""
+    """One shared server for the class, stopped by guard 2; guard 16 starts its own."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1903,6 +1907,156 @@ class ServiceCase(GuardCase):
         self.assertEqual(_server_pids(), [], "a no-op stop started a process")
 
         _put("guard02.stop", {"exit": stopped.returncode, "wall_s": stop_wall, "second_stop_exit": again.returncode})
+
+    # --- 13: guard 16 owns the idle timeout, and it runs last ----------------
+
+    def test_0950_guard16_idle_timeout(self) -> None:
+        """Guard 16: a declared idle period retires the server, and never cuts a render.
+
+        This guard runs after guard 2 has stopped the shared server, and that
+        ordering is load-bearing: `run/server.lock` is one instance per card
+        (guard 12), so a second server cannot start while the first holds it.
+        `unittest` sorts test methods alphabetically and `0950` sorts after
+        `0900`, which is why the name is what it is.
+
+        It proves three things the law now declares: a period below the boot cost
+        is refused at the door and starts nothing; a request in flight outlasts
+        the period without being cut, because idle means no request in flight
+        *and* none queued; and once the server does fall idle it retires on its
+        own — port silent, state file removed, process gone — through the same
+        path `stop` uses.
+        """
+        timeout = 16.0
+        # The render has to outlast the declared period, or it would prove
+        # nothing: 1024x576 is 589,824 px, about 28 s on this card against the
+        # 16 s the guard declares.
+        width, height = 1024, 576
+
+        # 0. One instance per card (guard 12). The class fixture starts a shared
+        #    server and guard 2 normally stops it before this guard runs; under
+        #    `-k guard16` guard 2 is filtered out and the shared server is still
+        #    up, so it goes first. This guard must not depend on the order it
+        #    happens to be run in.
+        if _state() is not None or _server_pids():
+            cleared = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and (_state() is not None or _server_pids()):
+                time.sleep(0.5)
+            self.assertEqual(_server_pids(), [], f"the shared server would not stop: {cleared.stderr}")
+            self.assertIsNone(_state(), "the shared server left its state file behind")
+
+        # 1. Below the boot cost: refused at the door, and nothing is started.
+        refused = _cli("start", "--idle-timeout", "5", timeout=120)
+        print(f"guard 16: start --idle-timeout 5 → exit {refused.returncode}")
+        _put("guard16.refused", {
+            "exit": refused.returncode,
+            "stderr": refused.stderr[-400:],
+            "pids": _server_pids(),
+            "state": _state(),
+        })
+        self.assertEqual(refused.returncode, 2, f"a period below the boot cost must exit 2: {refused.stderr}")
+        self.assertIn("boot cost", refused.stderr, "the refusal did not name what it refused against")
+        self.assertEqual(_server_pids(), [], "a refused idle timeout started a server")
+        self.assertIsNone(_state(), "a refused idle timeout wrote a state file")
+
+        # The server's log is opened in append mode and never truncated, so any
+        # count taken here is cumulative across every run this machine has ever
+        # done. Guard 1 baselines its two counters for exactly this reason, and
+        # without the baseline the assertion below could not fail: it would pass
+        # on a retirement that logged nothing, because an older one had.
+        declared_before = _log_count("idle: declared")
+        retiring_before = _log_count("— retiring")
+
+        # 2. A declared period the system accepts, and a warm server.
+        started = _cli("start", "--idle-timeout", f"{timeout:g}", timeout=600)
+        print(f"guard 16: start --idle-timeout {timeout:g} → exit {started.returncode}; {started.stdout.strip()}")
+        _put("guard16.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
+        self.assertEqual(started.returncode, 0, f"start failed: {started.stderr}")
+        self.assertIn(f"idle timeout {timeout:g} s", started.stdout, "the started server did not echo its deadline")
+        status, health = _health()
+        self.assertEqual(status, 200, f"/health did not answer: {health}")
+        pid = health.get("pid")
+        self.assertEqual(_server_pids(), [pid], "one start, one process")
+
+        # 3. A second `start` with a different period: reported, ignored, and the
+        #    running server keeps its own — the same rule `--port` follows.
+        again_start = _cli("start", "--idle-timeout", "600", timeout=120)
+        print(f"guard 16: second start --idle-timeout 600 → exit {again_start.returncode}, {again_start.stderr.strip()!r}")
+        _put("guard16.ignored", {"exit": again_start.returncode, "stderr": again_start.stderr})
+        self.assertEqual(again_start.returncode, 0, f"a differing period must not be an error: {again_start.stderr}")
+        self.assertIn("idle-timeout 600 ignored", again_start.stderr, "the ignored period was not reported")
+        self.assertEqual(_server_pids(), [pid], "a differing period started a second server")
+
+        # 3. A request that outlasts the period is served whole, not cut.
+        still = FILES / "g16-in-flight.png"
+        if still.exists():
+            still.unlink()
+        began = time.perf_counter()
+        code, body = _generate({
+            "prompt": "a brass compass on a wooden table",
+            "seed": 7,
+            "width": width,
+            "height": height,
+            "out": str(still),
+        })
+        wall = round(time.perf_counter() - began, 2)
+        print(
+            f"guard 16: a {body.get('render_s')} s render against a {timeout:g} s period → "
+            f"HTTP {code}, wall {wall} s"
+        )
+        _put("guard16.in_flight", {"status": code, "render_s": body.get("render_s"), "wall_s": wall, "out": body.get("out")})
+        self.assertEqual(code, 200, f"the render was cut or refused: {body}")
+        self.assertTrue(still.is_file(), "the render wrote no still")
+        self.assertGreater(
+            float(body.get("render_s") or 0), timeout,
+            "the guard's render did not outlast the declared period, so it proved nothing",
+        )
+        self.assertEqual(_server_pids(), [pid], "the server did not survive its own render")
+
+        # 4. It stays up for the period *after* the render, not for a moment.
+        #    Counting the period from the moment the request was accepted would
+        #    retire the server the instant the render finished.
+        time.sleep(timeout / 2)
+        self.assertTrue(STATE_FILE.exists(), "the server retired while still inside its idle period")
+        self.assertEqual(_server_pids(), [pid], "the server retired while still inside its idle period")
+
+        # 5. Then it retires by itself: port silent, state gone, process gone.
+        deadline = time.monotonic() + timeout + 45
+        retired_at = None
+        while time.monotonic() < deadline:
+            if _health()[0] != 200 and not STATE_FILE.exists() and not _server_pids():
+                retired_at = round(time.perf_counter() - began, 2)
+                break
+            time.sleep(0.5)
+        after_status, after_body = _health()
+        print(f"guard 16: after {retired_at} s from the request — /health {after_status}, state {STATE_FILE.exists()}")
+        _put("guard16.retired", {
+            "after_s": retired_at,
+            "health": after_status,
+            "state_exists": STATE_FILE.exists(),
+            "pids": _server_pids(),
+        })
+        self.assertIsNotNone(retired_at, "the server never retired on its declared idle period")
+        self.assertNotEqual(after_status, 200, f"the port still answers after the idle retirement: {after_body}")
+        self.assertFalse(STATE_FILE.exists(), "the state file survived the idle retirement")
+        self.assertEqual(_server_pids(), [], "a server process survived the idle retirement")
+
+        # 6. The reason is in the server's own log, not inferred from silence.
+        #    Counted as a delta: the log is append-only, so an absolute count
+        #    would be answering about some earlier run.
+        declared = _log_count("idle: declared") - declared_before
+        retired = _log_count("— retiring") - retiring_before
+        print(f"guard 16: this run's server logged {declared} declaration(s) and {retired} retirement(s)")
+        _put("guard16.log", {"declared": declared, "retired": retired})
+        self.assertGreaterEqual(declared, 1, "the server did not log the idle period it was started with")
+        self.assertGreaterEqual(retired, 1, "the server did not log why it retired")
+
+        # 7. The ordinary paths still hold afterwards.
+        again = _cli("stop", timeout=120)
+        print(f"guard 16: stop after the retirement → exit {again.returncode}, {again.stdout.strip()!r}")
+        _put("guard16.stop_after", {"exit": again.returncode, "stdout": again.stdout})
+        self.assertEqual(again.returncode, 0, f"stopping a retired server must exit 0: {again.stderr}")
+        self.assertEqual(_server_pids(), [], "a no-op stop started a process")
 
 
 # --- the fixture's raw steps -----------------------------------------------

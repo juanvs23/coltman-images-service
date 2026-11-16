@@ -94,7 +94,7 @@ Two doors, one implementation. The CLI is a client of the HTTP API; it contains 
 ### 5.1 CLI
 
 ```
-coltman-images start [--port N] [--foreground]
+coltman-images start [--port N] [--foreground] [--idle-timeout SECONDS]
 coltman-images generate --prompt "..." [--seed N] [--width N] [--height N] [--out PATH] [--steps N] [--upscale] [--json]
 coltman-images stop
 ```
@@ -157,7 +157,7 @@ Errors are always `{"error": {"code": ..., "message": ...}}` — never a bare st
 | --- | --- |
 | 0 | ok |
 | 1 | render failed |
-| 2 | invalid request |
+| 2 | invalid request — or an `--idle-timeout` value the system refuses, a usage error that never reaches a request |
 | 3 | a declared asset is missing |
 | 4 | the server is not available (not running, unreachable, another instance already owns the card, or the port could not be claimed) |
 
@@ -205,7 +205,11 @@ Failure handling: a stale `run/server.json` — pid not alive, or port not answe
 
 Single-flight: one worker and one FIFO queue that never refuses a request; its depth is reported by `/health`. There is no per-request ceiling: a render runs until it finishes, and `stop` is the only abort — it releases the card after its 30 s grace. Two simultaneous requests never load two models. The whole transformer is resident (6057 MiB measured, section 12), so the single worker is a decision rather than a capacity report: it keeps one queue, one census and one VRAM budget.
 
-Declared absence: the server never self-terminates on idle. What it holds while idle is a process, a bound port and about 165 MiB — measured at 770 MiB with the server up against 605 without it — and **not the card**: every request brings its model in and takes it out again, so the peak exists only inside a request. The decision, not an omission, is that a forgotten server keeps the port and the process until `stop` (see `[DEBT] no-idle-timeout` in `docs/roadmap.md`).
+**Declared absence, unless declared otherwise.** By default the server never self-terminates on idle: a forgotten server keeps the port and the process until `stop`. What it holds while idle is a process, a bound port and about 165 MiB — measured at 770 MiB with the server up against 605 without it — and **not the card**: every request brings its model in and takes it out again, so the peak exists only inside a request.
+
+`start --idle-timeout SECONDS` declares the other behavior. **Idle means no request in flight and none queued**, both conditions at once — a 45 s render leaves the queue empty while the card is busy, so a period measured on the queue alone would cut a render. When the declared period passes with nothing to do, the server retires through the same path `POST /shutdown` uses: it drains, releases, removes `run/server.json` and exits 0. There is no second retirement path. The period counts from the moment the server *becomes* idle, not from the moment a request was accepted, or a long render would eat the whole period and the server would retire the instant it finished.
+
+The floor is the measured boot cost, **15.1 s** (11.0 s of it a discarded warm-up), and `start` refuses anything below it with exit 2 before any work: a server that idles for less than it takes to start is worse than no server. The trade the option makes is exactly that boot — the next request after a retirement pays it again. `start` is idempotent for this option as it is for `--port`: a period given while a server is already running is reported on stderr and ignored, and the running server keeps the period it was started with — the period is not recorded in `run/server.json` or `/health`, so the CLI reports what it was given rather than a comparison it cannot make.
 
 `run/server.json`:
 
@@ -310,6 +314,7 @@ Every option the system honours is named here. There is no hidden default anywhe
 | warm-up shape | 512×512 | `start` |
 | warm-up prompt | `"warm up"` | `start` (value lives in `model/entry.yaml`, section 6.1) |
 | warm-up seed | 0 | `start` (value lives in `model/entry.yaml`, section 6.1) |
+| idle timeout | none: the server never self-terminates | `start` — at least the 15.1 s boot cost, refused below it |
 | queue | unbounded FIFO; depth reported in `/health` | server |
 | stop grace | 30 s | `stop` |
 | steps | 12 | model entry — the default; a request may override it inside `limits.steps` |
@@ -340,7 +345,7 @@ Six steps, each built and exercised alone before the next begins.
 
 ## 10. The test matrix
 
-Fifteen guards are declared, each with the failure it catches. Guard 13 is reserved by the web UI (P9) and is not written yet, so fourteen are written and the table carries those fourteen. The suite collects fifteen test methods, because guard 4 is written as two (`04` and `04b`). This section is the only place the count of the current matrix is declared: every other document names the guards without counting them. A dated record of a past run keeps that run's own numbers — how many methods it collected, how long it took — because that is what it measured; `tests/e2e/p6-guards/README.md` holds the P6 run of 2026-11-15, and its twelve test methods are that run's, not the matrix's.
+Sixteen guards are declared, each with the failure it catches. Guard 13 is reserved by the web UI (P9) and is not written yet, so fifteen are written and the table carries those fifteen. The suite collects sixteen test methods, because guard 4 is written as two (`04` and `04b`). This section is the only place the count of the current matrix is declared: every other document names the guards without counting them. A dated record of a past run keeps that run's own numbers — how many methods it collected, how long it took — because that is what it measured; `tests/e2e/p6-guards/README.md` holds the P6 run of 2026-11-15, and its twelve test methods are that run's, not the matrix's.
 
 | # | Guard | Failure it catches |
 | --- | --- | --- |
@@ -358,6 +363,7 @@ Fifteen guards are declared, each with the failure it catches. Guard 13 is reser
 | 12 | One instance, one card: with the state file deleted, `start` reports the running server instead of spawning a second; a hand-launched `python -m coltman_images.server` on another port is refused before it loads a weight; exactly one server process exists after each attempt. | A second process loading a second transformer onto a card that holds one, which is an out-of-memory crash rather than a slow request. |
 | 14 | Entry neutrality: an entry with arbitrary component names, no transformer config and no float8 census loads through `entry.py` and renders through a stub adapter; and no model-specific name survives in `coltman_images/entry.py`, checked on the parsed code rather than on prose. | A law only one model can satisfy, which turns a second model into surgery on the core. |
 | 15 | The step count is a request field bounded by the entry: a value outside `limits.steps` is refused before any adapter call, a value inside appears in the response, and an absent value means the entry's default. | A speed control enforced nowhere, or a request that silently renders at the default while the caller believes it chose. |
+| 16 | Idle timeout: a period below the boot cost is refused at the door and starts nothing; with one declared, a request that outlasts the period is served whole rather than cut; and once the server falls idle it retires on its own — port silent, state file removed, process gone — through the path `stop` uses, with the reason in its own log. | A server that never releases a forgotten port, or one whose timer cuts a render in flight. |
 
 ## 11. The cost model the system is built against
 

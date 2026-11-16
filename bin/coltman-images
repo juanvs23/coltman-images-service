@@ -159,13 +159,23 @@ def _tail_log(lines: int = 20) -> str:
 # --- start ------------------------------------------------------------------
 
 
-def _report_running(state: dict, health: dict, requested_port: int | None) -> int:
+def _report_running(
+    state: dict,
+    health: dict,
+    requested_port: int | None,
+    requested_idle_timeout: float | None = None,
+) -> int:
     pid = health.get("pid", state.get("pid"))
     port = health.get("port", state.get("port"))
     if requested_port is not None and requested_port != port:
         _note(
             f"--port {requested_port} ignored: the running server is on {port} "
             "(one server serves this project; stop it first to change the port)"
+        )
+    if requested_idle_timeout is not None:
+        _note(
+            f"--idle-timeout {requested_idle_timeout:g} ignored: the running server keeps "
+            "the idle period it was started with (stop it first to change it)"
         )
     print(f"coltman-images: already running — pid {pid}, port {port}, state {health.get('status')}")
     return EXIT_OK
@@ -207,7 +217,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         port = state.get("port", DEFAULT_PORT)
         health = _health(port) if isinstance(port, int) else None
         if health is not None and health.get("status") == "warm":
-            return _report_running(state or {"pid": holder, "port": port}, health, args.port)
+            return _report_running(
+            state or {"pid": holder, "port": port},
+            health,
+            args.port,
+            args.idle_timeout,
+        )
         who = f"pid {holder}" if holder else "another process"
         _note(
             f"a server ({who}) already owns this card and is not answering yet — nothing was "
@@ -221,7 +236,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         port = state.get("port", DEFAULT_PORT)
         health = _health(port) if isinstance(port, int) else None
         if health is not None and health.get("status") == "warm":
-            return _report_running(state, health, args.port)
+            return _report_running(state, health, args.port, args.idle_timeout)
 
         pid = state.get("pid")
         if _our_server(pid):
@@ -253,6 +268,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     port = DEFAULT_PORT if args.port is None else args.port
     command = [str(PYTHON), "-u", "-m", MODULE, "--port", str(port)]
+    if args.idle_timeout is not None:
+        command += ["--idle-timeout", repr(float(args.idle_timeout))]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
 
@@ -282,7 +299,13 @@ def cmd_start(args: argparse.Namespace) -> int:
             if tail:
                 print(tail, file=sys.stderr)
             _note(f"the server exited with code {code} before the port answered")
-            return EXIT_ASSET_MISSING if code == EXIT_ASSET_MISSING else EXIT_SERVER_UNAVAILABLE
+            # Exit 2 from the server is a declared option it refused — the idle
+            # timeout below the boot cost. That is the caller's mistake, not an
+            # unavailable server, so it keeps the request-level code.
+            return {
+                EXIT_ASSET_MISSING: EXIT_ASSET_MISSING,
+                EXIT_INVALID_REQUEST: EXIT_INVALID_REQUEST,
+            }.get(code, EXIT_SERVER_UNAVAILABLE)
         health = _health(port)
         if health is not None and health.get("status") == "warm":
             break
@@ -294,7 +317,15 @@ def cmd_start(args: argparse.Namespace) -> int:
             child.terminate()
         return EXIT_SERVER_UNAVAILABLE
 
-    print(f"coltman-images: started — pid {health.get('pid')}, port {health.get('port')}, state {health.get('status')}")
+    deadline = (
+        ""
+        if args.idle_timeout is None
+        else f", idle timeout {args.idle_timeout:g} s"
+    )
+    print(
+        f"coltman-images: started — pid {health.get('pid')}, port {health.get('port')}, "
+        f"state {health.get('status')}{deadline}"
+    )
     if not args.foreground:
         print(f"coltman-images: log {LOG_FILE}")
         if log_handle is not None:
@@ -434,6 +465,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--foreground",
         action="store_true",
         help="keep the server attached to this terminal instead of backgrounding it",
+    )
+    start.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "retire the server on its own after this many idle seconds; absent means "
+            "never; the server refuses a value below its boot cost"
+        ),
     )
     start.set_defaults(handler=cmd_start)
 

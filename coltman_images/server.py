@@ -22,6 +22,15 @@ shape (discarded, never written), write `run/server.json`, and only then bind
 `127.0.0.1`. Binding last is deliberate: an answering port is proof of a warm
 server.
 
+The server never retires on its own unless the operator declares an idle
+period at `start` time (`--idle-timeout`). Absent that declaration it keeps the
+process and the port until `stop`, exactly as before. When the period is
+declared, the server retires through the same path `POST /shutdown` uses: the
+shutdown watcher wakes on a bounded wait, finds no request in flight and none
+queued for the declared period, and asks for the shutdown it would have
+received. There is no second retirement path and no second thread
+(protocol section 6).
+
 `coltman_images/render.py` owns one render — the plan, the output path, the
 seed, the stage and the call into the adapter — and `coltman_images/adapter.py`
 owns the model.
@@ -39,6 +48,7 @@ import fcntl
 import gc
 import json
 import logging
+import math
 import os
 import pathlib
 import queue
@@ -68,6 +78,24 @@ STATE_FILE = RUN_DIR / "server.json"
 
 STOP_GRACE_S = 30.0
 """How long `stop` waits for in-flight work before releasing anyway (section 6)."""
+
+IDLE_CHECK_TICK_S = 1.0
+"""How often the shutdown watcher wakes to look at the idle condition.
+
+The watcher is the thread that owns "the server is retiring". The idle period
+adds a reason for it to wake, not a thread of its own: with no declaration the
+wait is unbounded and the thread sleeps until a shutdown arrives; with one it
+waits a second at a time and looks at the condition on every tick.
+"""
+
+MIN_IDLE_TIMEOUT_S = 15.1
+"""The shortest idle period a retired server can be declared with (section 6).
+
+It is the measured boot cost: 15.1 s, of which 11.0 s is the discarded 512x512
+warm-up. A period below it is dominated by booting — the server retires before
+it has served a request since it started, and the next request pays that boot
+again — so `start` refuses it at the door with exit 2, before any work.
+"""
 
 EXIT_OK = 0
 EXIT_RENDER_FAILED = 1
@@ -159,6 +187,15 @@ class WarmServer:
         self._stop_thread: threading.Thread | None = None
         self._warm_s = 0.0
         self._state_written = False
+
+        # The declared idle period, and the two counters that decide whether the
+        # server is idle (protocol section 6). `_inflight` counts the requests
+        # the server has accepted and not yet finished — the queue depth alone
+        # would miss the one being rendered.
+        self._idle_timeout: float | None = None
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
+        self._last_activity = 0.0
 
     # --- boot ---------------------------------------------------------------
 
@@ -286,18 +323,44 @@ class WarmServer:
                     job.error = exc
                 finally:
                     job.done.set()
+                    self._finish()
             finally:
                 self._queue.task_done()
+
+    def _finish(self) -> None:
+        """One accepted job is done — rendered or failed. It is no longer in flight.
+
+        Both paths end here: a render that raised still consumed the card, so
+        the request it belongs to is over.
+
+        When this is the last one, the server *becomes* idle and the declared
+        period starts counting here. Counting it from the moment the request was
+        accepted would let a 45 s render eat the whole idle budget, and the
+        server would retire the instant the render finished instead of after the
+        idle period the operator declared.
+        """
+        with self._inflight_lock:
+            self._inflight = max(0, self._inflight - 1)
+            if self._inflight == 0:
+                self._last_activity = time.monotonic()
 
     def _enqueue(self, job: _Job) -> None:
         """Accept a job, unless the server is already stopping.
 
         The lock is what makes the sentinel the last thing in the FIFO: a job
         can never be queued behind it and wait forever.
+
+        The in-flight counter is raised *before* the job reaches the queue, so
+        the worker can never finish a job this server has not counted yet — a
+        decrement that arrived first would leave the counter stuck above zero
+        and the idle period would never expire.
         """
         with self._queue_lock:
             if self._stopping:
                 raise ServerError("the server is stopping; no further work is accepted")
+            with self._inflight_lock:
+                self._inflight += 1
+            self._last_activity = time.monotonic()
             self._queue.put(job)
 
     def depth(self) -> int:
@@ -306,9 +369,14 @@ class WarmServer:
 
     # --- lifecycle ----------------------------------------------------------
 
-    def serve(self, port: int) -> None:
-        """Bind, write the state, then serve until shutdown. Blocks."""
+    def serve(self, port: int, idle_timeout: float | None = None) -> None:
+        """Bind, write the state, then serve until shutdown. Blocks.
+
+        `idle_timeout` is the operator's declared idle period, in seconds.
+        `None` — the default — means the server never retires on its own.
+        """
         self.port = port
+        self._idle_timeout = None if idle_timeout is None else float(idle_timeout)
         try:
             httpd = _HTTPServer((BIND, port), _Handler)
         except OSError as exc:
@@ -319,6 +387,9 @@ class WarmServer:
 
         # Protocol section 6: the state file is written before the port binds.
         self._write_state()
+        # The port binds: from here the server has accepted nothing, so this is
+        # where the idle period starts counting.
+        self._last_activity = time.monotonic()
         self._start_worker()
 
         self._stop_thread = threading.Thread(
@@ -332,6 +403,11 @@ class WarmServer:
             os.getpid(),
             STATE_FILE,
         )
+        if self._idle_timeout is not None:
+            logger.info(
+                "idle: declared %.1f s — the server retires on its own when nothing is in flight",
+                self._idle_timeout,
+            )
         httpd.serve_forever(poll_interval=0.2)
         # `serve_forever` returns as soon as a shutdown was requested, which is
         # *before* the drain finishes. The watcher owns the drain and exits the
@@ -349,7 +425,7 @@ class WarmServer:
         self._shutdown_requested.set()
 
     def _watch_shutdown(self) -> None:
-        self._shutdown_requested.wait()
+        self._await_shutdown()
         deadline = time.monotonic() + STOP_GRACE_S
         logger.info("stop: draining in-flight work (grace %.0f s)", STOP_GRACE_S)
 
@@ -368,6 +444,52 @@ class WarmServer:
         logger.info("stop: card released, state file removed, exiting")
         logging.shutdown()
         os._exit(EXIT_OK)
+
+    def _await_shutdown(self) -> None:
+        """Wait until the server is asked to retire, and ask when it is idle.
+
+        With no declared idle period this is the wait it always was: one
+        unbounded wait, woken by `request_shutdown`. With one declared, the wait
+        is bounded and the idle condition is checked on every tick — and the
+        answer it gives is the same shutdown `POST /shutdown` gives, not a
+        second retirement path.
+        """
+        if self._idle_timeout is None:
+            self._shutdown_requested.wait()
+            return
+        while not self._shutdown_requested.wait(timeout=IDLE_CHECK_TICK_S):
+            if not self._idle_expired():
+                continue
+            # A stop can arrive between the wait expiring and this line. If it
+            # did, the retirement is already the caller's and the log must not
+            # claim the idle period asked for it.
+            if self._shutdown_requested.is_set():
+                return
+            logger.info(
+                "idle: %.1f s with no request in flight and none queued — retiring",
+                self._idle_timeout,
+            )
+            self.request_shutdown()
+            return
+
+    def _idle_expired(self) -> bool:
+        """True when the declared idle period has passed with nothing to do.
+
+        Idle means both conditions, always: no request in flight *and* none
+        queued. The queue depth alone is not enough — it counts the jobs
+        waiting, not the job being rendered — so the in-flight count is what
+        keeps a 46 s render from being interrupted by a timeout.
+        """
+        timeout = self._idle_timeout
+        if timeout is None:
+            return False
+        with self._inflight_lock:
+            inflight = self._inflight
+        if inflight > 0:
+            return False
+        if self._queue.qsize() > 0:
+            return False
+        return (time.monotonic() - self._last_activity) > timeout
 
     def _release(self) -> None:
         """Give the card back: nothing of this process stays resident."""
@@ -684,6 +806,15 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
         description="The coltman-images server process. Normally launched by `coltman-images start`.",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=None,
+        help=(
+            "seconds with no request in flight, and none queued, before the server "
+            f"retires on its own; absent means never; at least {MIN_IDLE_TIMEOUT_S:.1f}"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -697,6 +828,24 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.port <= 65535:
         logger.error("port: %d is outside 1..65535", args.port)
         return EXIT_SERVER_UNAVAILABLE
+    # The declared idle period is refused here, before the mutex is taken and
+    # long before a weight is loaded: a period shorter than the boot it saves is
+    # a server that spends more time starting than serving (section 6).
+    if args.idle_timeout is not None and not math.isfinite(args.idle_timeout):
+        logger.error(
+            "idle timeout: %r is not a finite number of seconds; nothing was loaded",
+            args.idle_timeout,
+        )
+        return EXIT_INVALID_REQUEST
+    if args.idle_timeout is not None and args.idle_timeout < MIN_IDLE_TIMEOUT_S:
+        logger.error(
+            "idle timeout: %.1f s is below the boot cost of %.1f s — a server that "
+            "idles for less than it takes to start is worse than no server; nothing "
+            "was loaded",
+            args.idle_timeout,
+            MIN_IDLE_TIMEOUT_S,
+        )
+        return EXIT_INVALID_REQUEST
 
     # The mutex comes before any model work. The boot order is load, warm up,
     # then bind, so a second process would exhaust the card *before* the port
@@ -744,7 +893,7 @@ def _serve(args: argparse.Namespace) -> int:
         signal.signal(sig, _signal)
 
     try:
-        app.serve(port=args.port)
+        app.serve(port=args.port, idle_timeout=args.idle_timeout)
     except ServerError as exc:
         logger.error("%s", exc)
         return EXIT_SERVER_UNAVAILABLE

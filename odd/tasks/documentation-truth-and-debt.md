@@ -164,37 +164,37 @@ wrong conclusion, all verifiable against
 ### T4 — Debt closeout
 Two debts remain open in `docs/roadmap.md`. Both have operator rulings.
 
-- [ ] T4.1 `[DEBT] no-idle-timeout` — **still open; no ruling yet.** The server
+- [x] T4.1 `[DEBT] no-idle-timeout` — **closed 2026-11-16.** The server
   never self-terminates. The debt's own target spec: an `--idle-timeout` option
   that releases the process and the port after a declared idle period; the boot
   cost is already measured (15.1 s, of which 11.0 s is the discarded warm-up), so
   declare the option against that number. This one needs implementation, not a
   document edit.
-- [ ] T4.2 `[DEBT] no-version-control` — closed 2026-11-15. Its contract still
+- [x] T4.2 `[DEBT] no-version-control` — closed 2026-11-15. Its contract still
   describes the debt as open in `docs/context.md` (T1.1). The roadmap entry itself
   is correct.
-- [ ] T4.3 The `[DEBT] no-idle-timeout` implementation: `--idle-timeout` on
+- [x] T4.3 The `[DEBT] no-idle-timeout` implementation: `--idle-timeout` on
   `start`, the server releasing itself after that idle period, the port freed,
   the state file removed, and the card released. Protocol §6 and §7 declare it,
   §5.4 maps its exit codes, and a guard proves it — the guard count in §10 grows
   accordingly, and the README's flag table gains the flag.
-- [ ] T4.4 The roadmap's debt schedule is rewritten so that every remaining entry
+- [x] T4.4 The roadmap's debt schedule is rewritten so that every remaining entry
   has a contract with a marker, a reason, a target spec and steps.
 
 ## Acceptance criteria
 
-- [ ] Every claim in every maintained document is either true of the current
+- [x] Every claim in every maintained document is either true of the current
   tree, or is explicitly marked as a decision (§12) or as evidence
   (`docs/reference/`).
-- [ ] No document counts guards, tests or files except `protocol.md` §10, which
+- [x] No document counts guards, tests or files except `protocol.md` §10, which
   is the single source and says so.
-- [ ] The FP8/INT8 question appears nowhere as open.
-- [ ] The steps-quality obligation appears nowhere as unscored.
-- [ ] `docs/reference/steps-fidelity.md` carries no number that the evidence
+- [x] The FP8/INT8 question appears nowhere as open.
+- [x] The steps-quality obligation appears nowhere as unscored.
+- [x] `docs/reference/steps-fidelity.md` carries no number that the evidence
   contradicts.
-- [ ] `[DEBT] no-idle-timeout` is closed by an implemented, guarded option.
-- [ ] The suite is green, and the count in §10 is what the suite collects.
-- [ ] One changelog entry per work unit.
+- [x] `[DEBT] no-idle-timeout` is closed by an implemented, guarded option.
+- [x] The suite is green, and the count in §10 is what the suite collects.
+- [x] One changelog entry per work unit.
 
 ## Applicable checks
 
@@ -231,3 +231,20 @@ Two debts remain open in `docs/roadmap.md`. Both have operator rulings.
   at protocol section 10 for the count, and `tests/e2e/p5-cli-parity/README.md`
   points at the folder instead of naming a number. Verified by grep; the suite was
   not re-run.
+
+- 2026-11-16 — T4.3 done, and the debt closed. The delegated writer died on a
+  provider quota after finishing `WarmServer` (the idle logic, `_idle_expired`,
+  `_await_shutdown`, the in-flight counter) but before wiring it: `_parse` had
+  no flag, `_serve` never passed the period, and `bin/coltman-images` had zero
+  occurrences of "idle". The orchestrator finished the wiring and wrote guard 16.
+  **The end-to-end run found a defect the code review had not**: the idle clock
+  started when a request was *accepted*, so a 45 s render consumed the whole
+  16 s period and the server retired 0.05 s after the render instead of 16 s
+  after it — the clock now starts when the server *becomes* idle. A second
+  defect was found reading the diff: the in-flight counter was raised after the
+  job reached the queue, so a worker that finished first would leave it stuck
+  above zero and the period would never expire. Measured: the floor refuses at
+  15.1 s with exit 2 and starts nothing; a 27.711 s render answers 200 against a
+  16 s period; retirement lands 16.25 s after that render, leaving no port, no
+  state file and no process. Guard 16 green alone in 95.527 s, and the whole
+  matrix green — `Ran 16 tests in 546.863 s`, `OK`, after an independent verifier found ten defects, all fixed: `docs/context.md` still declared the debt open; guard 16's log assertion was cumulative against an append-only log and could not fail (it now baselines, and reports 1 declaration and 1 retirement for its own run); the e2e README cited guard 16's render as its own (it is 44.816 s, not 27.711 s); the changelog spliced two runs into one measurement; §5.4 generalised the refusal to every start option while `--port` refuses with 4; and five smaller honesty fixes.

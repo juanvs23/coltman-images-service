@@ -64,6 +64,19 @@ coltman-images generate --prompt "a lighthouse at dusk"
 coltman-images stop
 ```
 
+`start` can also hand the server a deadline for itself:
+
+```bash
+coltman-images start --idle-timeout 300       # retires after 5 minutes with no work
+```
+
+With no `--idle-timeout` the server never self-terminates, which is the default.
+With one, it releases the process and the port after that many seconds with no
+request in flight and none queued — through the same drain `stop` uses. The floor
+is the measured **15.1 s** boot cost (11.0 s of it a discarded warm-up) and a
+shorter period is refused at the door, because a server that idles for less than
+it takes to start is worse than no server: the next request pays that boot again.
+
 `generate` prints the absolute path of the file it wrote, and nothing else.
 It never starts a server by itself: if none is running it exits 4 and says so.
 
@@ -107,7 +120,7 @@ before any GPU work.
 | --- | --- |
 | 1280×720, 12 steps | ~46 s (43.5 s of render, ~2.6 s of load) |
 | 2560×1440 via the stage | ~52 s (the same render plus ~4.6 s of stage) |
-| boot (`start`) | ~20 s, of which ~11 s is the discarded 512×512 warm-up |
+| boot (`start`) | ~20 s, of which ~11 s is the discarded 512×512 warm-up — and the 15.1 s it spends on the server side is the floor `--idle-timeout` is refused below |
 
 There is **no per-request timeout**: a render runs until it finishes, and `stop`
 is the only abort. The queue never refuses a request; it serialises them,
@@ -153,7 +166,7 @@ Full table and the exact mapping: `docs/protocol.md` §5.4.
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-One test per guard, and guard 4 is written as two: about eight minutes, a dozen
+One test per guard, and guard 4 is written as two: about ten minutes, a dozen
 stills. They prove request validation, the lifecycle and its idempotent edges,
 that the warm-up is real, the census, determinism, the default folder, CLI/API
 parity, self-containment, single-flight, the upscale stage, one instance per

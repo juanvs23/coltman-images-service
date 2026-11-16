@@ -44,7 +44,7 @@ Both quantization arms were measured on 2026-11-13 with the transformer as the o
 
 ## Known issues
 
-- No idle timeout, by design. The server never self-terminates, but it does **not** hold the card: idle it costs a process, a port and ~165 MiB, and the GPU is free between requests. Tracked as `[DEBT] no-idle-timeout` in `docs/roadmap.md`.
+- No idle timeout by default. The server never self-terminates unless `start --idle-timeout SECONDS` declares a period, and that is the operator's choice, not an omission: idle, the server costs a process, a port and ~165 MiB, and the GPU is free between requests (protocol section 6).
 - The checkpoint's header records the exporter's stack — torch 2.12.1+cu130, torchao 0.17.0+cu130, diffusers 0.40.0.dev0 — while the production runtime is torch 2.13.0. P2 validates the loader against the runtime it actually runs on; the header is a record of the export, not a requirement.
 - This project has no other home and no other name. Any other path or executable name claiming to be this system is stale.
 - The model assets are inputs: the system reads them and nothing writes them. The interpreter is the project's own `.venv`, and the only dependencies in it are the ones `requirements.txt` pins.
