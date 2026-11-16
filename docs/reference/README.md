@@ -24,5 +24,6 @@ The absolute paths these records were written with have been replaced by placeho
 | --- | --- |
 | `zimage-fp8-speed.md` | the production path's timing, the offload-profile comparison, the GPU, disk, swap and page-cache measurements |
 | `zimage-fp8-vs-int8.md` | the A/B between both quantization arms, the blind quality adjudication, and both checkpoints' header censuses |
+| `steps-ladder.md` | the nine-step range measured over five seeds on a hostile prompt: the time curve, the SSIM convergence, and where the ceiling actually is |
 
 `upstream/` holds the vendor cards and the official README, with its own README extracting what they add.
