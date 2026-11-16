@@ -340,7 +340,7 @@ Six steps, each built and exercised alone before the next begins.
 
 ## 10. The test matrix
 
-Fifteen guards are declared, each with the failure it catches. Guard 13 is reserved by the web UI (P9) and is not written yet, so fourteen are written and the table carries those fourteen. The suite collects fifteen test methods, because guard 4 is written as two (`04` and `04b`). This section is the only place the count is declared: every other document names the guards without counting them.
+Fifteen guards are declared, each with the failure it catches. Guard 13 is reserved by the web UI (P9) and is not written yet, so fourteen are written and the table carries those fourteen. The suite collects fifteen test methods, because guard 4 is written as two (`04` and `04b`). This section is the only place the count of the current matrix is declared: every other document names the guards without counting them. A dated record of a past run keeps that run's own numbers — how many methods it collected, how long it took — because that is what it measured; `tests/e2e/p6-guards/README.md` holds the P6 run of 2026-11-15, and its twelve test methods are that run's, not the matrix's.
 
 | # | Guard | Failure it catches |
 | --- | --- | --- |
