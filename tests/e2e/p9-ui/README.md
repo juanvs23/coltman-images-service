@@ -7,82 +7,104 @@ the installed system did.
 
 - **Date:** 2026-11-16
 - **Verdict:** pass on every criterion that can be observed without a browser.
-  One thing was not observed and is named below: no browser ever rendered this
-  page. The suite is green — `Ran 17 tests in 822.983 s`, `OK` — and guard 13
+  Two things were not observed and are named below: no browser ever rendered this
+  page, and the 50/50 layout is proved as a component tree rather than as pixels.
+  The suite is green — `Ran 17 tests in 725.120 s`, `OK` — and guard 13
   repeats the structural, unit and single-flight halves inside the matrix.
 
 ## What it proves
 
 1. **The page is served by the server process itself.** `start --ui` exited 0
    and echoed `ui http://127.0.0.1:7860` on its success line; `127.0.0.1:7860`
-   answered `200 text/html; charset=utf-8`, 18,355 bytes, while
+   answered `200 text/html; charset=utf-8`, 20,747 bytes, while
    `127.0.0.1:8420/health` answered `warm` on the same pid. Two ports, one
    process; the API keeps its stdlib server. The boot was `boot: warm in
-   20.72 s` and the page was serving 0.30 s later (`boot.log`).
-2. **A still through the page is a still through the queue.** One SD submission
-   took 49.21 s of status updates and produced
-   `out/20261116T183435Z-7.png`: 1280×720, 848,663 bytes,
+   21.81 s` and the page was serving 0.27 s later (`boot.log`).
+2. **The layout is two equal halves.** `tests/e2e/p9-ui/layout.py` builds the
+   page in-process and records its tree (`layout-tree.json`): one `row` whose two
+   children are `column` with **`scale=1`** each, the first holding
+   `markdown, textbox, row(seed, size), slider, button` and the second holding
+   `markdown (status), image, markdown (details)`. `equal_height` is off, so the
+   halves size to their own content. What that artifact does not prove is how a
+   browser paints them — see below.
+3. **A still through the page is a still through the queue.** One SD submission
+   at the slider's initial position took 49.15 s of status updates and produced
+   `out/20261116T200244Z-7.png`: 1280×720, 848,663 bytes,
    `sha256 ff3b84a08e48e1b0c70bc96aa40c10936e782f183b6443ae1157e1c654dbe5c4`.
    That digest is this project's recorded 1280×720 baseline for the same prompt
    and seed — **the page produced the same bytes as the CLI and as a direct
    POST**, which is the strongest statement available that it added no second
    path to the model.
-3. **The screen states SD or HD, the base, the census and the three timings.**
-   Verbatim from the page (`sd-transcript.json`, `hd-transcript.json`):
+4. **The step control is the entry's ladder, and its default is an absence.**
+   Two measurements, in that order:
+
+   - At the API, `a lighthouse at dusk`, seed 7, 512×512 with **no `steps`
+     field** and with `steps: 12` explicitly: both are
+     `sha256 0065c34af014499e…`, the recorded baseline — so an explicit default
+     changes nothing and the page is free to send the absence instead.
+   - Through the page, the same request at the slider's initial position is
+     `ff3b84a0…` (point 3). Moved to 16, the same page produced
+     `786d8b5142995431…` with `render_s 60.488` against `45.201`, and its panel
+     stated `steps 16` — the count the still was rendered with, from the
+     response, not the slider's position.
+
+   The panel for the default submission states `steps 12`, which is the entry's
+   default: the page never sends 12, and the response supplies it.
+5. **The screen states SD or HD, the base, the census and the three timings.**
+   Verbatim from the page (`sd-steps12-transcript.json`,
+   `hd-steps12-transcript.json`):
 
    ```
    **SD** — 1280x720, the native render; nothing was synthesized.
    `z-image-turbo-fp8` · seed 7 · steps 12
    census — float8 239 · plain 282 · other 0 · total 521
-   render_s 45.339 · load_s 3.461 · duration_s 49.178
+   render_s 45.201 · load_s 3.563 · duration_s 49.101
    ```
 
    ```
-   **HD** — delivered 2560x1440, rendered 1280x720, enlarged x2 by `realesrgan-x2plus` in 4.807 s.
+   **HD** — delivered 2560x1440, rendered 1280x720, enlarged x2 by `realesrgan-x2plus` in 5.055 s.
    `z-image-turbo-fp8` · seed 7 · steps 12
    census — float8 239 · plain 282 · other 0 · total 521
-   render_s 45.541 · load_s 3.404 · duration_s 54.64
+   render_s 45.956 · load_s 3.225 · duration_s 55.059
    ```
 
    The HD still is 2560×1440, 3,148,193 bytes,
-   `sha256 28871f935ee8cd70…` — the same digest two separate runs of this page
+   `sha256 28871f935ee8cd70…` — the same digest every run of this page has
    produced, so the whole path including the stage is deterministic. The census
    is rendered key by key from the response, and it is the render's, not the
    stage's. `render_s`, `load_s` and `duration_s` are three separate lines: the
    last is the only one that carries load and queue wait. The HD size is derived
    from the entry's ceiling and aspect, not from `defaults × 2`: 1280×720 is
-   exactly this entry's ceiling, so only a derivation would survive an entry
-   whose defaults sit lower.
-4. **The queue depth is on screen while it waits.** Two submissions fired at
-   once through the page: the first rendered in 50.21 s and reported
-   `queue depth 1` in 99 of its statuses — the second was sitting behind it —
-   while the second waited and finished at 99.51 s, its status line naming
-   `in flight — queue depth 1` up to `50.1 s` of its own elapsed clock before
-   its render began. The server's own log shows the two stills ~50 s apart. The
-   page has no queue of its own: it reaches `submit()` immediately and waits
-   where the depth is visible.
-5. **Two concurrent submissions serialise.** Guard 13 fires both through the
-   page's own client (gradio's, the endpoint the button calls) and measured a
-   wall ratio of **1.997** (101.378 s against 50.763 s, separator 1.5), with
-   both showing their first status within **0.1 s** of the click — the guard
-   allows 10 s, and a page that held a submission in front of the seam would
-   need about fifty — and the queue never held more than one waiting request
-   over 201 samples.
-6. **The page shares the process's life.** `stop` exited 0; both ports then
+   exactly this entry's ceiling, so only a derivation survives an entry whose
+   defaults sit lower.
+6. **The queue depth is on screen while it waits.** Two submissions fired at
+   once through the page: the first rendered in 50.00 s and reported
+   `queue depth 1` while the second sat behind it; the second waited and finished
+   at 100.05 s, its status line naming `in flight — queue depth 1` for its whole
+   wait. The page has no queue of its own: it reaches `submit()` immediately and
+   waits where the depth is visible.
+7. **Two concurrent submissions serialise.** Guard 13 fires both through the
+   page's own client (gradio's, the endpoint the button calls), at 12 and 16
+   steps, and measured a wall ratio of **2.300** (51.760 s against 119.055 s, separator
+   1.5), with both showing their first status within **0.1 s** of the click — the
+   guard allows 10 s, and a page that held a submission in front of the seam
+   would need about fifty — and the queue never held more than one waiting
+   request over 237 samples.
+8. **The page shares the process's life.** `stop` exited 0; both ports then
    refused connections (`000` from `curl`), `run/server.json` was gone and no
    `coltman_images.server` process remained.
-7. **A differing `--ui-port` on a running server is reported and ignored** —
+9. **A differing `--ui-port` on a running server is reported and ignored** —
    exit 0, with the reason on stderr, exactly as `--port` and `--idle-timeout`
    behave. `--ui-port` equal to `--port` is a different thing and is refused:
    exit 2, before the mutex, in 1.6 s — no boot, no weight.
-8. **A server without `--ui` imports no gradio.** `import coltman_images.server`
-   leaves `gradio` out of `sys.modules`, and the whole matrix — started without
-   the flag — is green.
-9. **`--ui` with gradio absent is exit 3 before any work.** Gradio is installed,
-   so the absence was simulated by shadowing the module for one process; the
-   server refused with the missing thing named and exited 3, with no state file
-   written and no weight read.
-10. **The page telephones nothing.** The server's own log for a `--ui` boot
+10. **A server without `--ui` imports no gradio.** `import coltman_images.server`
+    leaves `gradio` out of `sys.modules`, and the whole matrix — started without
+    the flag — is green.
+11. **`--ui` with gradio absent is exit 3 before any work.** Gradio is installed,
+    so the absence was simulated by shadowing the module for one process; the
+    server refused with the missing thing named and exited 3, with no state file
+    written and no weight read.
+12. **The page telephones nothing.** The server's own log for a `--ui` boot
     contains **no `https://` line at all**, while it does contain gradio's calls
     to its own port (`analytics-after.txt`, `boot.log`). Before the fix the same
     log carried `HEAD https://huggingface.co/api/telemetry/…` twice and
@@ -99,23 +121,15 @@ the installed system did.
 
 ## What was not observed
 
-I did not click in a browser. The page was driven through `gradio_client`, the
-module gradio ships, which calls the same handler the button calls and returns
-the same three outputs the page displays; that is what the transcripts record,
-and guard 13's behavioural half now uses the same route. What that leaves
-unproven is everything only a browser does: the layout, the JavaScript, the
-disabled-and-spinning button state while a submission runs, and the image
-rendering in a viewport. The HTML is served and is in `page.html`; it is an 18 KB
-shell, because the page is a JavaScript application.
-
-One defect was found by this run and fixed in the same work unit, and both sides
-of it are observable. Gradio serialises event handlers by default, so the
-*second* page submission waited **inside gradio, before reaching the seam** — the
-status line never saw it and the elapsed clock started only when the handler
-finally ran, which made the page a queue of its own. No transcript of that run
-was kept, so no figure is claimed for it; what the fix is worth is the
-measurement in point 5, taken after it. The page's concurrency limit is now
-unlimited and the server's queue is the only one.
+I did not click in a browser, and neither of the two refinements was seen on a
+screen. The page was driven through `gradio_client`, the module gradio ships,
+which calls the same handler the button calls and returns the same three outputs
+the page displays; guard 13's behavioural half uses the same route. What that
+leaves unproven is everything only a browser does: the layout as painted, the
+JavaScript, the slider's drag, the disabled-and-spinning button while a
+submission runs, and the image in a viewport. The HTML is served and is in
+`page.html`; it is a 21 KB shell, because the page is a JavaScript application,
+and the 50/50 is evidenced as the component tree in `layout-tree.json`.
 
 ## Commands, and what they answered
 
@@ -126,31 +140,50 @@ Every command ran from the project root, with nothing else holding the card.
 ```sh
 BEFORE=$(wc -l < run/server.log)
 bin/coltman-images start --ui
-# coltman-images: started — pid 396147, port 8420, state warm, ui http://127.0.0.1:7860
+# coltman-images: started — pid 482033, port 8420, state warm, ui http://127.0.0.1:7860
 tail -n +$((BEFORE+1)) run/server.log > evidence/boot.log
 grep -c "https://" evidence/boot.log          # 0
 grep -c "http://127.0.0.1:7860" evidence/boot.log   # 3, gradio calling itself
 curl -s -o evidence/page.html -w '%{http_code} %{content_type} %{size_download}\n' http://127.0.0.1:7860/
-# 200 text/html; charset=utf-8 18355
+# 200 text/html; charset=utf-8 20747
 curl -s http://127.0.0.1:8420/health
-# {"status": "warm", "model": "z-image-turbo-fp8", "census": {...}, "pid": 396147, "port": 8420, "queue": {"depth": 0}}
+# {"status": "warm", "model": "z-image-turbo-fp8", "census": {...}, "pid": 482033, "port": 8420, "queue": {"depth": 0}}
 ```
 
-**One still through the page, SD then HD** (the stills are written by the
-server into `out/`, which is where the response says they are):
+**The layout, as a component tree** (no server, no card):
+
+```sh
+.venv/bin/python tests/e2e/p9-ui/layout.py
+# one row, two columns of scale=1; controls left, status/still/details right; layout: ok
+```
+
+**Still through the page: the default position, 16 steps, then HD** (the stills
+are written by the server into `out/`, which is where the response says they
+are):
 
 ```sh
 .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --quality SD
+.venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --steps 16
 .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --quality HD
+```
+
+**The default is an absence, at the API:**
+
+```sh
+curl -s -X POST localhost:8420/generate -H 'Content-Type: application/json' \
+  -d '{"prompt":"a lighthouse at dusk","seed":7,"width":512,"height":512,"out":"…/baseline-no-steps.png"}'
+curl -s -X POST localhost:8420/generate -H 'Content-Type: application/json' \
+  -d '{"prompt":"a lighthouse at dusk","seed":7,"width":512,"height":512,"steps":12,"out":"…/baseline-steps-12.png"}'
+# both 512x512, 258,609 bytes, sha256 0065c34af014499e… — the recorded baseline
 ```
 
 **Two submissions at once, to see the wait:**
 
 ```sh
 .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a brass compass on a wooden table" \
-  --seed 21 --quality SD --label queue-front &
+  --seed 21 --label queue-front &
 .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a brass compass on a wooden table" \
-  --seed 22 --quality SD --label queue-back &
+  --seed 22 --label queue-back &
 wait
 ```
 
@@ -206,21 +239,24 @@ tail -n +$((BEFORE+1)) run/server.log > tests/e2e/p9-ui/evidence/boot.log
 grep -c "https://" tests/e2e/p9-ui/evidence/boot.log       # must be 0
 curl -s -o tests/e2e/p9-ui/evidence/page.html http://127.0.0.1:7860/
 curl -s http://127.0.0.1:8420/health > tests/e2e/p9-ui/evidence/health.json
+.venv/bin/python tests/e2e/p9-ui/layout.py
 .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --quality SD
+.venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --steps 16
 .venv/bin/python tests/e2e/p9-ui/drive.py --prompt "a lighthouse at dusk" --seed 7 --quality HD
 bin/coltman-images stop
 ```
 
 The halves of the proof are also inside the matrix, and guard 13 repeats the
-structural scan, the switch mapping, the three failure sentences and the
-serialisation with the page mounted — the last two through the page itself:
+structural scans, the switch and ladder mapping, the three failure sentences and
+the serialisation with the page mounted — the last two through the page itself:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v -k guard13
 ```
 
-`drive.py` is the operator's hand, not the system: it needs a server already
-started with `--ui` and writes only into `evidence/`.
+`drive.py` and `layout.py` are the operator's hand, not the system: the first
+needs a server started with `--ui`, the second needs neither, and both write only
+into `evidence/`.
 
 ## What the run leaves behind
 
@@ -229,20 +265,24 @@ started with `--ui` and writes only into `evidence/`.
 | File | What it is |
 | --- | --- |
 | `start.out`, `start.err` | `start --ui`'s success line, and an empty stderr |
-| `boot.log` | the server's own log for that boot: `boot: warm in 20.72 s`, `ui: serving …`, and no `https://` line |
+| `boot.log` | the server's own log for that boot: `boot: warm in 21.81 s`, `ui: serving …`, and no `https://` line |
 | `analytics-after.txt` | the two counts taken over `boot.log` — 0 external, 3 to its own port |
 | `analytics-before.log` | three of the telemetry lines the pre-fix mounts wrote, with their timestamps |
 | `analytics-override.txt`, `boot-shell-override.log` | the same boot with `GRADIO_ANALYTICS_ENABLED=True` and a foreign `GRADIO_TEMP_DIR` exported: 0 `https://` lines, cache still under `run/ui/` |
-| `page.html`, `page.headers` | the page as served: 200, `text/html`, 18,355 bytes |
+| `layout-tree.json` | the page's component tree: one row, two `scale=1` columns, and the slider's entry-derived bounds |
+| `page.html`, `page.headers` | the page as served: 200, `text/html`, 20,747 bytes |
 | `health.json` | `/health` while the page was up |
-| `sd-transcript.json` | one SD submission: every status the page yielded, then the panel |
-| `hd-transcript.json` | the HD submission, same shape |
+| `sd-steps12-transcript.json` | one SD submission at the slider's initial position: every status, then the panel |
+| `sd-steps16-transcript.json` | the same request at 16 steps, same shape |
+| `hd-steps12-transcript.json` | the HD submission, same shape |
 | `queue-front-transcript.json`, `queue-back-transcript.json` | two submissions at once: the wait, the depth, the two durations |
+| `baseline-no-steps.png`, `baseline-steps-12.png` | the 512×512 pair: identical bytes with the field absent and present |
 | `ignore.out`, `ignore.err` | the ignored `--ui-port` 7861 |
 | `stop.out`, `stop.err` | `stop`, and the empty stderr |
 
-The stills are not copied here: the server wrote them into `out/`, where the
-response says they are, and gradio's serving cache lives under `run/ui/`.
+The page's own stills are not copied here: the server wrote them into `out/`,
+where the response says they are, and gradio's serving cache lives under
+`run/ui/`.
 
 ## Inputs, by location
 
@@ -250,8 +290,9 @@ response says they are, and gradio's serving cache lives under `run/ui/`.
 | --- | --- |
 | The flag, its two ports, the cache and the telemetry | `docs/protocol.md` sections 5.5, 6 and 7 |
 | What the page may say, and what it may touch | `docs/protocol.md` section 5.5, and section 4.2 for the response fields |
+| The step ladder's bounds and default | `model/entry.yaml` — `limits.steps`, `steps`; read by the page, never carried by it |
 | The exit codes of a refusal | `docs/protocol.md` section 5.4 — 3 for a missing asset, 2 for a usage error |
 | The implementation | `coltman_images/ui.py`; `WarmServer._start_ui` in `coltman_images/server.py` |
 | The flag and its forwarding | `bin/coltman-images` — `start --ui [--ui-port N]` |
 | The proof in the matrix | `tests/test_p6_guards.py` — `ServiceCase.test_0960_guard13_ui_never_renders_outside_the_queue` |
-| The operator's hand | `tests/e2e/p9-ui/drive.py` |
+| The operator's hands | `tests/e2e/p9-ui/drive.py`, `tests/e2e/p9-ui/layout.py` |

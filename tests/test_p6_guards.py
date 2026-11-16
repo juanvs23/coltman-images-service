@@ -1113,6 +1113,15 @@ non-docstring strings (`"1280x720"`); docstrings are prose, and that is where th
 current entry's numbers may legitimately appear.
 """
 
+G13_FORBIDDEN_STEP_CONSTANTS = (8, 12, 16)
+"""The entry's ladder, which the page must not carry either.
+
+`limits.steps` and the entry's own `steps` are per-entry, so a slider with 8..16
+baked in would refuse the next entry's range or offer one it refuses. These are
+scanned as **numbers only**: a step count in a string would be a label built from
+the entry, and this page has none.
+"""
+
 
 def _ui_imports(path: pathlib.Path) -> set[str]:
     """Every module `path` imports, relative imports resolved to their package.
@@ -1176,24 +1185,28 @@ def _ui_app_attributes(tree: ast.AST) -> set[str]:
     }
 
 
-def _is_forbidden_size(value: object) -> bool:
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, (int, float)):
-        return any(abs(float(value) - needle) < 1e-9 for needle in G13_FORBIDDEN_SIZE_CONSTANTS)
-    return False
+def _ui_entry_attributes(tree: ast.AST) -> set[str]:
+    """Every attribute the module reads from the resolved entry.
 
-
-def _ui_size_literals(tree: ast.AST) -> list[object]:
-    """The entry's sizes written into the parsed module, arithmetic folded.
-
-    Three ways a size arrives in code and only one of them is a bare int, so all
-    three are read: a constant (`1280`), a folded expression (`640 * 2`, `1280.0`
-    after `/ 1`), and a string (``"1280x720"``). Docstrings are excluded through
-    `_literal_strings`, which is the same rule guards 8, 11 and 14 use: prose is
-    not a coupling.
+    `entry.x` and `app.entry.x` both count. This is the positive direction of the
+    "no constant" rule: the ladder's bounds and its default must come *from the
+    entry*, and asserting that they do is stronger than only asserting that the
+    numbers are absent.
     """
-    found: list[object] = []
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        owner = node.value
+        if isinstance(owner, ast.Name) and owner.id == "entry":
+            names.add(node.attr)
+        elif isinstance(owner, ast.Attribute) and owner.attr == "entry":
+            names.add(node.attr)
+    return names
+
+
+def _ui_numbers(tree: ast.AST) -> list[float | int]:
+    """Every numeric literal in the module, arithmetic folded and deduplicated."""
 
     def folded(node: ast.AST) -> float | int | None:
         if (
@@ -1224,19 +1237,34 @@ def _ui_size_literals(tree: ast.AST) -> list[object]:
                 return None
         return None
 
+    values: list[float | int] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and _is_forbidden_size(node.value):
-            found.append(node.value)
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, (int, float))
+            and not isinstance(node.value, bool)
+        ):
+            values.append(node.value)
         elif isinstance(node, ast.BinOp):
             value = folded(node)
-            if value is not None and _is_forbidden_size(value):
-                found.append(value)
-    for _line, text in _literal_strings(tree):
-        for needle in G13_FORBIDDEN_SIZE_CONSTANTS:
-            if str(needle) in text:
-                found.append(text)
-                break
-    return sorted(set(found), key=str)
+            if value is not None:
+                values.append(value)
+    return sorted(set(values), key=float)
+
+
+def _ui_matching(values: list[float | int], forbidden: tuple[int, ...]) -> list[float | int]:
+    """The values that name one of `forbidden`, floats compared by value."""
+    return [value for value in values if any(abs(float(value) - needle) < 1e-9 for needle in forbidden)]
+
+
+def _ui_string_size_literals(tree: ast.AST, forbidden: tuple[int, ...]) -> list[str]:
+    """Non-docstring strings that spell one of `forbidden` (`"1280x720"`)."""
+    hits = {
+        text
+        for _line, text in _literal_strings(tree)
+        if any(str(needle) in text for needle in forbidden)
+    }
+    return sorted(hits)
 
 
 def _ui_page(port: int, path: str = "/") -> tuple[int, str, bytes]:
@@ -2315,12 +2343,16 @@ class ServiceCase(GuardCase):
         forbidden = _ui_forbidden(imports)
         calls_submit = _ui_calls(tree, "submit")
         app_attributes = _ui_app_attributes(tree)
+        entry_attributes = _ui_entry_attributes(tree)
 
         # Not vacuous: the same scan over the file that does the coupling.
         adapter_source = ROOT / "coltman_images" / "adapters" / "zimage.py"
         adapter_forbidden = _ui_forbidden(_ui_imports(adapter_source))
 
-        size_constants = _ui_size_literals(tree)
+        numbers = _ui_numbers(tree)
+        size_numbers = _ui_matching(numbers, G13_FORBIDDEN_SIZE_CONSTANTS)
+        step_numbers = _ui_matching(numbers, G13_FORBIDDEN_STEP_CONSTANTS)
+        size_strings = _ui_string_size_literals(tree, G13_FORBIDDEN_SIZE_CONSTANTS)
 
         # 2. Unit — the switch, on a synthetic entry and on the real declaration.
         from coltman_images import ui as ui_module
@@ -2330,15 +2362,21 @@ class ServiceCase(GuardCase):
         # it — so a page that multiplied instead of deriving fails the assertion
         # below on this entry. The sub-assertion in 13b keeps the fixture
         # discriminating, because an entry whose defaults sit at its ceiling would
-        # let the multiplication pass.
+        # let the multiplication pass. Its ladder is not the real entry's either,
+        # so a page that carried 8..16 would refuse this one.
         stub = types.SimpleNamespace(
             defaults={"width": 256, "height": 256, "format": "png"},
             max_pixels=300000,
+            steps=10,
+            steps_min=4,
+            steps_max=13,
         )
         factor = 2
-        stub_sd = ui_module.request_from_form("a thing that is not a lighthouse", 11, False, stub, factor)
-        stub_hd = ui_module.request_from_form("a thing that is not a lighthouse", 11, True, stub, factor)
-        stub_absent_seed = ui_module.request_from_form("a thing that is not a lighthouse", None, False, stub, factor)
+        stub_prompt = "a thing that is not a lighthouse"
+        stub_sd = ui_module.request_from_form(stub_prompt, 11, False, stub.steps, stub, factor)
+        stub_hd = ui_module.request_from_form(stub_prompt, 11, True, stub.steps, stub, factor)
+        stub_absent_seed = ui_module.request_from_form(stub_prompt, None, False, stub.steps, stub, factor)
+        stub_steps = ui_module.request_from_form(stub_prompt, 11, False, stub.steps_min, stub, factor)
 
         # The real numbers, read as a declaration rather than resolved: a full
         # `load_entry` would hash 6.29 GB for a fact this guard only needs to
@@ -2348,9 +2386,18 @@ class ServiceCase(GuardCase):
         real = types.SimpleNamespace(
             defaults=dict(declaration["defaults"]),
             max_pixels=int(declaration["limits"]["max_pixels"]),
+            steps=int(declaration["steps"]),
+            steps_min=int(declaration["limits"]["steps"]["min"]),
+            steps_max=int(declaration["limits"]["steps"]["max"]),
         )
         real_factor = int(stage["scale"])
-        real_hd = ui_module.request_from_form("a lighthouse at dusk", 7, True, real, real_factor)
+        real_hd = ui_module.request_from_form("a lighthouse at dusk", 7, True, real.steps, real, real_factor)
+        real_default = ui_module.request_from_form(
+            "a lighthouse at dusk", 7, False, real.steps, real, real_factor
+        )
+        real_low = ui_module.request_from_form(
+            "a lighthouse at dusk", 7, False, real.steps_min, real, real_factor
+        )
 
         # The status line carries the queue depth while it waits — the roadmap's
         # "a 46 s request behind another one must not look like a hang" — and a
@@ -2397,12 +2444,14 @@ class ServiceCase(GuardCase):
                 }
 
         waiting = _Waiting()
-        updates = list(ui_module.generate(waiting, "a thing", 11, False))
+        updates = list(ui_module.generate(waiting, "a thing", 11, False, waiting.entry.steps))
         statuses = [update for update in updates if isinstance(update, str)]
         failures: dict[str, list] = {}
         for error_class in (InvalidRequest, RenderFailed, ServerError):
             waiting.error = error_class("the seam said so")
-            failures[error_class.__name__] = list(ui_module.generate(waiting, "a thing", 11, False))
+            failures[error_class.__name__] = list(
+                ui_module.generate(waiting, "a thing", 11, False, waiting.entry.steps)
+            )
         waiting.error = None
 
         _put(
@@ -2414,17 +2463,31 @@ class ServiceCase(GuardCase):
                     "forbidden": forbidden,
                     "calls_submit": calls_submit,
                     "app_attributes": sorted(app_attributes),
-                    "size_constants": size_constants,
+                    "entry_attributes": sorted(entry_attributes),
+                    "numbers": numbers,
+                    "size_numbers": size_numbers,
+                    "step_numbers": step_numbers,
+                    "size_strings": size_strings,
                     "control_file": str(adapter_source.relative_to(ROOT)),
                     "control_forbidden": adapter_forbidden,
                 },
                 "unit": {
-                    "stub": {"sd": stub_sd, "hd": stub_hd, "absent_seed": stub_absent_seed, "factor": factor},
+                    "stub": {
+                        "sd": stub_sd,
+                        "hd": stub_hd,
+                        "absent_seed": stub_absent_seed,
+                        "steps": stub_steps,
+                        "factor": factor,
+                        "ladder": [stub.steps_min, stub.steps_max, stub.steps],
+                    },
                     "real": {
                         "defaults": real.defaults,
                         "max_pixels": real.max_pixels,
                         "factor": real_factor,
                         "hd": real_hd,
+                        "default_request": real_default,
+                        "low_request": real_low,
+                        "ladder": [real.steps_min, real.steps_max, real.steps],
                     },
                     "waiting": {
                         "statuses": statuses,
@@ -2438,21 +2501,30 @@ class ServiceCase(GuardCase):
         print(
             f"guard 13: {ui_source.name} parsed — {len(imports)} imports, "
             f"{len(forbidden)} reaching the model stack; calls submit() = {calls_submit}; "
-            f"app attributes {sorted(app_attributes)}; "
-            f"{len(size_constants)} entry sizes written in code"
+            f"app attributes {sorted(app_attributes)}; entry attributes {sorted(entry_attributes)}; "
+            f"{len(size_numbers)} entry sizes, {len(step_numbers)} ladder numbers and "
+            f"{len(size_strings)} size strings written in code"
         )
+        print(f"guard 13: every numeric literal in {ui_source.name}: {numbers}")
         print(
             f"guard 13: the same scan finds {len(adapter_forbidden)} forbidden imports in "
             f"{adapter_source.name} — {adapter_forbidden}"
         )
         print(
             f"guard 13: SD {stub_sd} · HD {stub_hd} on a {stub.defaults['width']}x"
-            f"{stub.defaults['height']} entry with a {stub.max_pixels} px ceiling"
+            f"{stub.defaults['height']} entry with a {stub.max_pixels} px ceiling and a "
+            f"{stub.steps_min}..{stub.steps_max} ladder defaulting to {stub.steps}"
+        )
+        print(
+            f"guard 13: the stub at {stub.steps_min} steps asks {stub_steps.get('steps')!r}, "
+            f"at its default {stub.steps} it asks {stub_sd.get('steps')!r} (absent means the entry's)"
         )
         waiting_status = statuses[0] if statuses else "(nothing)"
         print(
             f"guard 13: the real entry gives SD {real.defaults['width']}x{real.defaults['height']} "
-            f"and HD {real_hd['width']}x{real_hd['height']} above its {real.max_pixels} px ceiling"
+            f"and HD {real_hd['width']}x{real_hd['height']} above its {real.max_pixels} px ceiling; "
+            f"a default-position request carries steps={real_default.get('steps')!r} and a "
+            f"{real.steps_min}-step one carries steps={real_low.get('steps')!r}"
         )
         print(f"guard 13: while one request waits the status says {waiting_status!r}")
         for name, values in failures.items():
@@ -2481,11 +2553,30 @@ class ServiceCase(GuardCase):
                 f"the page may read {sorted(G13_APP_ATTRIBUTES)} and nothing else",
             )
 
-        with self.subTest(part="13a: the UI carries no entry size"):
+        with self.subTest(part="13a: the UI carries no entry size, no ladder"):
             self.assertEqual(
-                size_constants,
+                size_numbers,
                 [],
-                f"{ui_source.name} writes the entry's sizes into the page: {size_constants}",
+                f"{ui_source.name} writes the entry's sizes into the page: {size_numbers}",
+            )
+            self.assertEqual(
+                size_strings,
+                [],
+                f"{ui_source.name} writes the entry's sizes into a string: {size_strings}",
+            )
+            self.assertEqual(
+                step_numbers,
+                [],
+                f"{ui_source.name} writes the entry's step ladder into the page: {step_numbers}",
+            )
+
+        with self.subTest(part="13a: the ladder comes from the entry"):
+            missing = sorted({"steps_min", "steps_max", "steps"} - entry_attributes)
+            self.assertEqual(
+                missing,
+                [],
+                f"{ui_source.name} does not read {missing} from the entry, so its control carries "
+                "the ladder instead of asking for it",
             )
 
         with self.subTest(part="13b: the switch maps to the entry"):
@@ -2494,6 +2585,24 @@ class ServiceCase(GuardCase):
             self.assertNotIn("upscale", stub_sd, "SD asked for the stage")
             self.assertIn("seed", stub_sd)
             self.assertNotIn("seed", stub_absent_seed, "an absent seed must let the server pick one")
+
+            # The ladder. A value at the entry's default is **omitted**, so the
+            # page at its initial position sends exactly the request the API
+            # serves with no `steps` at all (section 4.1: absent means the
+            # entry's); any other value rides along and the entry bounds it.
+            self.assertNotIn(
+                "steps", stub_sd, "the slider's default position wrote a steps field into the request"
+            )
+            self.assertNotIn(
+                "steps", real_default, "the real entry's default position wrote a steps field"
+            )
+            self.assertEqual(
+                set(real_default),
+                {"prompt", "seed", "width", "height"},
+                "the default-position request is not the request the API serves with no steps at all",
+            )
+            self.assertEqual(stub_steps.get("steps"), stub.steps_min, "a moved slider did not reach the request")
+            self.assertEqual(real_low.get("steps"), real.steps_min, "a moved slider did not reach the request")
 
             naive = (stub.defaults["width"] * factor, stub.defaults["height"] * factor)
             self.assertLessEqual(
@@ -2597,10 +2706,15 @@ class ServiceCase(GuardCase):
         # Two submissions **through the page**, not through the API. The API pair
         # would stay serialised even if the page reached `app.adapter` or
         # `app._queue` behind its back, which is the failure this half exists to
-        # catch; these two enter where a browser enters.
+        # catch; these two enter where a browser enters. They also carry two
+        # different ladder positions — A at the entry's default, B at its ceiling —
+        # so the control is proved end to end: A's field is omitted and the
+        # response reports the entry's default, B's value reaches the render, and
+        # the slower second render keeps the serialisation signal wide.
         from gradio_client import Client
 
         seeds = {"A": 71, "B": 72}
+        steps = {"A": real.steps, "B": real.steps_max}
         barrier = threading.Barrier(2)
         results: dict[str, dict] = {}
         depths: list[int] = []
@@ -2613,7 +2727,13 @@ class ServiceCase(GuardCase):
             first_status_after = None
             panel = ""
             updates = 0
-            job = client.submit("a brass compass on a wooden table", seeds[label], "SD", api_name="/generate")
+            job = client.submit(
+                "a brass compass on a wooden table",
+                seeds[label],
+                "SD",
+                steps[label],
+                api_name="/generate",
+            )
             for update in job:
                 if updates == 0:
                     first_status_after = round(time.perf_counter() - began, 3)
@@ -2672,6 +2792,12 @@ class ServiceCase(GuardCase):
                 f"submission {label}'s page panel does not state what was delivered: {result['panel'][:200]!r}",
             )
             self.assertIn("census —", result["panel"], f"submission {label} showed no census")
+            self.assertIn(
+                f"steps {steps[label]}",
+                result["panel"],
+                f"submission {label} asked for {steps[label]} steps and its panel states "
+                f"{result['panel'][:220]!r} — the panel must report the count the still was rendered with",
+            )
             still = re.search(r"written to `([^`]+)`", result["panel"])
             self.assertIsNotNone(still, f"submission {label}'s panel names no file: {result['panel'][:200]!r}")
             written = pathlib.Path(still.group(1))

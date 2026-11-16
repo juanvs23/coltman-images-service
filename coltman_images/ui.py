@@ -21,11 +21,13 @@ the builder must not restate it:
    second until the result is ready: a request behind another one must not look
    like a hang, and the queue depth is the only thing that tells the operator
    why a page is quiet.
-4. `build` — the page. Presentation only: no validation, no request shaping, no
-   knowledge of a model. The adapter's census keys are never written here; they
-   are rendered as the response declares them, because protocol section 6.1
-   makes the adapter the owner of what a census key means and the next model has
-   no FP8 at all.
+4. `build` — the page. Two equal columns: the form on the left (prompt, seed, the
+   SD/HD switch, the steps slider whose range is the entry's, the button), the
+   status line, the still and its details on the right. Presentation only: no
+   validation, no request shaping, no knowledge of a model. The adapter's census
+   keys are never written here; they are rendered as the response declares them,
+   because protocol section 6.1 makes the adapter the owner of what a census key
+   means and the next model has no FP8 at all.
 
 Gradio is the first rendering of this, behind that seam: replacing it is
 replacing `build` and nothing else (protocol section 5.5).
@@ -61,33 +63,25 @@ def _hd_size(entry: Any, factor: int) -> tuple[int, int]:
     """The largest box of the entry's aspect that the declared stage can serve.
 
     The stage's reach is `max_pixels x factor²` (section 6.2), so HD is the
-    biggest multiple-of-16 box inside that reach with the entry's own aspect —
-    the base it will be enlarged from stays the entry's shape. Derived from the
-    ceiling, never from the defaults times the factor: those only clear the
-    ceiling while the defaults sit at it, and a future entry with smaller
+    biggest whole multiple of the entry's own box inside that reach — the base it
+    will be enlarged from keeps the entry's shape, and a multiple of a valid size
+    is a valid size (protocol section 4.1's block rule is preserved by it). Derived
+    from the ceiling, never from the defaults times the factor: those only clear
+    the ceiling while the defaults sit at it, and a future entry with smaller
     defaults would get a native render labelled HD.
     """
     width = int(entry.defaults["width"])
     height = int(entry.defaults["height"])
     cap = int(entry.max_pixels) * int(factor) * int(factor)
-    grid = 1 << 16
 
-    def snapped(numerator: int) -> tuple[int, int]:
-        return (width * numerator // grid // 16 * 16, height * numerator // grid // 16 * 16)
-
-    low, high, best = 1, grid * 128, None
-    while low <= high:
-        middle = (low + high) // 2
-        box_width, box_height = snapped(middle)
-        if box_width >= 256 and box_height >= 256 and box_width * box_height <= cap:
-            best = (box_width, box_height)
-            low = middle + 1
-        else:
-            high = middle - 1
+    best: tuple[int, int] | None = None
+    multiple = 2
+    while width * multiple * height * multiple <= cap:
+        best = (width * multiple, height * multiple)
+        multiple += 1
     if best is None:
         raise ValueError(
-            f"HD: the {width}x{height} defaults leave no multiple-of-16 box inside the "
-            f"{cap} px the stage can serve"
+            f"HD: the {width}x{height} defaults doubled are already above the {cap} px the stage can serve"
         )
     if best[0] * best[1] <= int(entry.max_pixels):
         raise ValueError(
@@ -98,7 +92,7 @@ def _hd_size(entry: Any, factor: int) -> tuple[int, int]:
 
 
 def request_from_form(
-    prompt: str, seed: Any, hd: bool, entry: Any, factor: int
+    prompt: str, seed: Any, hd: bool, steps: Any, entry: Any, factor: int
 ) -> dict[str, Any]:
     """The protocol section 4.1 request this form describes. Pure — no I/O.
 
@@ -109,17 +103,27 @@ def request_from_form(
     `_hd_size`, so it is above that ceiling by construction and inside what the
     stage can serve; the switch carries no size of its own.
 
+    `steps` is the ladder's position. A value equal to the entry's own default is
+    **omitted**, because absent means the entry's steps (section 4.1): the page
+    left at its initial position then sends exactly the request the API serves by
+    default, and "the entry's default" stays the entry's business instead of
+    becoming a number this module learned. Sending it explicitly produces the
+    same still — measured, `a lighthouse at dusk`, seed 7, 512×512 — but it would
+    write today's number into every request.
+
     `seed` is carried through exactly as given, never coerced: the server is the
     only thing that decides whether it is a usable seed, and a page that rounded
     it would be changing the request behind the operator's back.
 
     `entry` is the resolved entry and `factor` its stage's declared scale; both
-    are arguments rather than module constants because `limits.max_pixels` and
-    the defaults belong to the entry (roadmap P9 step 4).
+    are arguments rather than module constants because `limits.max_pixels`, the
+    defaults and `limits.steps` belong to the entry (roadmap P9 step 4).
     """
     request: dict[str, Any] = {"prompt": str(prompt)}
     if seed is not None:
         request["seed"] = seed
+    if steps is not None and steps != entry.steps:
+        request["steps"] = steps
     if hd:
         width, height = _hd_size(entry, int(factor))
         request["width"] = width
@@ -141,7 +145,7 @@ def render(app: Any, request: dict[str, Any]) -> dict[str, Any]:
     return app.submit(request)
 
 
-def generate(app: Any, prompt: str, seed: Any, hd: bool) -> Iterator[Any]:
+def generate(app: Any, prompt: str, seed: Any, hd: bool, steps: Any) -> Iterator[Any]:
     """Submit one request and report while it waits: status strings, then the response.
 
     `submit()` blocks until the still exists — ~46 s at 1280x720, and longer
@@ -163,7 +167,9 @@ def generate(app: Any, prompt: str, seed: Any, hd: bool) -> Iterator[Any]:
     if hd and declaration is None:
         raise RuntimeError("generate: HD needs the stage's declaration, and none is loaded")
     try:
-        request = request_from_form(prompt, seed, hd, entry, int(declaration.scale) if hd else 1)
+        request = request_from_form(
+            prompt, seed, hd, steps, entry, int(declaration.scale) if hd else 1
+        )
     except ValueError as exc:
         yield f"the page could not build that request — {exc}"
         return
@@ -207,14 +213,23 @@ def generate(app: Any, prompt: str, seed: Any, hd: bool) -> Iterator[Any]:
 
 
 def build(app: Any) -> gr.Blocks:
-    """The page: prompt, seed, an SD/HD switch, the status line and the still.
+    """The page: two equal halves — the form on the left, the result on the right.
 
     Presentation only. Every number and every word on the result panel comes
     from the response object — the delivered size, the base the stage started
     from, the census exactly as its keys are declared, and the three timings kept
     separate because `duration_s` is the only one that shows queue wait and load
     (protocol section 4.2).
+
+    The form's steps control takes its range **from the entry** — `limits.steps`
+    and the entry's own default — so a second entry with its own ladder needs no
+    change here. The status line sits at the top of the result half, not under the
+    form: it is the proof that the page is not hung, and the operator is looking
+    at the half where the still will appear.
     """
+    entry = app.entry
+    if entry is None:
+        raise RuntimeError("build: the page needs the resolved entry, and none is loaded")
 
     def _describe(response: dict[str, Any]) -> str:
         """The honest copy, from the response and never from a constant."""
@@ -246,43 +261,61 @@ def build(app: Any) -> gr.Blocks:
         ]
         return "\n".join(lines)
 
-    def _submit(prompt: str, seed: Any, quality: str) -> Iterator[tuple[Any, ...]]:
+    def _submit(
+        prompt: str, seed: Any, quality: str, steps: Any
+    ) -> Iterator[tuple[Any, ...]]:
         """Drive `generate` and hand its yields to the three outputs.
 
         `seed` is passed on as the component gives it — `gr.Number` with
-        `precision=0` hands an integer or nothing — because the server owns the
-        rule about what a seed may be.
+        `precision=0` hands an integer or nothing — and `steps` as the slider
+        hands it, which is an integer because the slider's `precision` is 0. The
+        server owns the rules about both.
         """
-        for update in generate(app, prompt, seed, quality == HD_LABEL):
+        for update in generate(app, prompt, seed, quality == HD_LABEL, steps):
             if isinstance(update, dict):
                 yield f"done — {update.get('out')}", update.get("out"), _describe(update)
             else:
                 yield str(update), None, ""
 
     with gr.Blocks(title="coltman-images", analytics_enabled=False) as page:
-        gr.Markdown(
-            "**coltman-images** — one request, one still. SD is the native render; "
-            "HD asks the declared stage to supply the pixels above the native ceiling."
-        )
-        prompt = gr.Textbox(
-            label="prompt",
-            lines=2,
-            placeholder="what to render",
-        )
         with gr.Row():
-            seed = gr.Number(label="seed", precision=0, value=None)
-            quality = gr.Radio(
-                choices=[SD_LABEL, HD_LABEL],
-                value=SD_LABEL,
-                label="size",
-            )
-        submit = gr.Button("generate", variant="primary")
-        status = gr.Markdown("idle")
-        still = gr.Image(label="still", type="filepath", height=540)
-        details = gr.Markdown("")
+            with gr.Column(scale=1, min_width=320):
+                gr.Markdown(
+                    "**coltman-images** — one request, one still. SD is the native render; "
+                    "HD asks the declared stage to supply the pixels above the native ceiling."
+                )
+                prompt = gr.Textbox(
+                    label="prompt",
+                    lines=2,
+                    placeholder="what to render",
+                )
+                with gr.Row():
+                    seed = gr.Number(label="seed", precision=0, value=None)
+                    quality = gr.Radio(
+                        choices=[SD_LABEL, HD_LABEL],
+                        value=SD_LABEL,
+                        label="size",
+                    )
+                steps = gr.Slider(
+                    minimum=int(entry.steps_min),
+                    maximum=int(entry.steps_max),
+                    step=1,
+                    value=int(entry.steps),
+                    precision=0,
+                    label="steps",
+                    info=(
+                        f"the entry's range, {entry.steps_min}–{entry.steps_max}; "
+                        f"its default is {entry.steps}"
+                    ),
+                )
+                submit = gr.Button("generate", variant="primary")
+            with gr.Column(scale=1, min_width=320):
+                status = gr.Markdown("idle")
+                still = gr.Image(label="still", type="filepath", height=540)
+                details = gr.Markdown("")
         submit.click(
             _submit,
-            inputs=[prompt, seed, quality],
+            inputs=[prompt, seed, quality, steps],
             outputs=[status, still, details],
             api_name="generate",
         )

@@ -123,11 +123,17 @@ coltman-images start --ui                    # the page on http://127.0.0.1:7860
 coltman-images start --ui --ui-port 8000     # somewhere else
 ```
 
-`start` echoes the address on its success line. The page has a prompt, a seed
-(leave it empty and the server picks one and reports it), a size switch and the
-still. It is a third door onto the same implementation, not a second renderer:
-it calls the same `submit()` the API calls, so two tabs serialise instead of
-loading two models.
+`start` echoes the address on its success line. The page is two equal halves: the
+form on the left, the still and its details on the right. The form has a prompt, a
+seed (leave it empty and the server picks one and reports it), a size switch and a
+**steps** slider — its range and its starting position are the entry's own
+`limits.steps` and `steps`, so the page asks the system what it may serve instead
+of carrying a ladder. The status line sits at the top of the right half, where you
+are looking while a request runs.
+
+It is a third door onto the same implementation, not a second renderer: it calls
+the same `submit()` the API calls, so two tabs serialise instead of loading two
+models.
 
 What the page says, and what each line means:
 
@@ -135,6 +141,8 @@ What the page says, and what each line means:
 | --- | --- |
 | **SD** | the native render — `upscale: null`; nothing was synthesized |
 | **HD** | a delivered size above the native ceiling, and the line names the base it started from (`upscale.from`) |
+| `steps` (form) | the entry's ladder: its range and its default come from `limits.steps`, and a position at the default is sent as no `steps` field at all |
+| `steps N` (panel) | the count the still was actually rendered with, from the response — not the slider's position |
 | the census | parameter counts exactly as the entry's adapter declares the keys |
 | `render_s` / `load_s` / `duration_s` | the render, the load, and the whole request — the last one is the only place queue wait is visible |
 | the queue depth while it waits | the number `/health` reports: jobs waiting for the single worker — your own request counts while it waits |
