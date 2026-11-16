@@ -203,12 +203,19 @@ class ZImageAdapter:
         # bf16, so the features are cast back to the dtype the regime was measured in.
         return [embedding.to(TEXT_DTYPE) for embedding in embeddings]
 
-    def denoise(self, features: object, width: int, height: int, seed: int) -> Image.Image:
-        """Sample the latents and decode them, releasing each model as it goes.
+    def denoise(
+        self, features: object, width: int, height: int, seed: int, steps: int
+    ) -> Image.Image:
+        """Sample the latents at `steps` and decode them, releasing each model as it goes.
 
         The transformer is loaded, censused, used and dropped; only then does the
         VAE take the card for the decode. The VAE goes back to the CPU before
         this returns, because the next request starts with the text encoder.
+
+        `steps` is the request's value or, when it named none, the entry's
+        default — resolved by the core and passed in (protocol section 4.2). The
+        weights are the same for every value, so the only thing that changes is
+        how many forwards the loop runs.
         """
         entry = self.entry
         transformer = load_transformer(entry, device=DEVICE)
@@ -237,7 +244,7 @@ class ZImageAdapter:
                     prompt_embeds=features,
                     height=height,
                     width=width,
-                    num_inference_steps=entry.steps,
+                    num_inference_steps=steps,
                     guidance_scale=entry.guidance,
                     num_images_per_prompt=1,
                     generator=generator,

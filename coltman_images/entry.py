@@ -31,7 +31,7 @@ DEFAULT_ENTRY = PROJECT_ROOT / "model" / "entry.yaml"
 
 # The closed request vocabulary (protocol section 4.1). An entry declares the
 # subset it accepts; nothing outside this tuple is ever a valid field.
-VOCABULARY = ("prompt", "seed", "width", "height", "out", "upscale")
+VOCABULARY = ("prompt", "seed", "width", "height", "out", "steps", "upscale")
 
 # The envelope every entry carries. `digests` is the one optional field: an
 # entry pins the components it wants pinned and nothing forces it to pin one.
@@ -50,7 +50,8 @@ _TOP_FIELDS = {
 }
 _OPTIONAL_TOP_FIELDS = frozenset({"digests"})
 _DEFAULT_FIELDS = {"width", "height", "format"}
-_LIMIT_FIELDS = {"max_pixels"}
+_LIMIT_FIELDS = {"max_pixels", "steps"}
+_STEP_LIMIT_FIELDS = {"min", "max"}
 _WARMUP_FIELDS = {"width", "height", "prompt", "seed"}
 
 
@@ -129,6 +130,8 @@ class Entry:
     checkpoint: pathlib.Path
     components: Components
     steps: int
+    steps_min: int
+    steps_max: int
     guidance: float
     max_pixels: int
     request_fields: tuple[str, ...]
@@ -158,6 +161,15 @@ class Entry:
             not isinstance(request["seed"], int) or isinstance(request["seed"], bool)
         ):
             problems.append("seed: expected an integer")
+        if "steps" in request:
+            steps = request["steps"]
+            if not isinstance(steps, int) or isinstance(steps, bool):
+                problems.append("steps: expected an integer")
+            elif not self.steps_min <= steps <= self.steps_max:
+                problems.append(
+                    f"steps: expected an integer inside {self.steps_min}..{self.steps_max}, "
+                    f"got {steps!r}"
+                )
         out = request.get("out")
         if out is not None and (not isinstance(out, str) or not pathlib.Path(out).is_absolute()):
             problems.append("out: expected an absolute path")
@@ -208,6 +220,18 @@ def _census(declared: Any) -> dict[str, int]:
             raise _refuse(f"expected_census.{key}: expected a non-negative integer")
         census[key] = int(value)
     return census
+
+
+def _step_limits(declared: Any) -> tuple[int, int]:
+    """`limits.steps`: exactly `min` and `max`, positive integers, `min <= max`."""
+    _exact_keys("limits.steps", declared, _STEP_LIMIT_FIELDS)
+    low, high = declared["min"], declared["max"]
+    for name, value in (("min", low), ("max", high)):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise _refuse(f"limits.steps.{name}: expected a positive integer, got {value!r}")
+    if low > high:
+        raise _refuse(f"limits.steps: min {low} is above max {high}")
+    return low, high
 
 
 def _verify_digests(declared: Any, components: Components) -> None:
@@ -267,6 +291,12 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
     max_pixels = raw["limits"]["max_pixels"]
     if not isinstance(max_pixels, int) or isinstance(max_pixels, bool) or max_pixels <= 0:
         raise _refuse(f"limits.max_pixels: expected a positive integer, got {max_pixels!r}")
+    steps_min, steps_max = _step_limits(raw["limits"]["steps"])
+    if not steps_min <= raw["steps"] <= steps_max:
+        raise _refuse(
+            f"steps: {raw['steps']} is outside limits.steps {steps_min}..{steps_max}; the default "
+            "a request inherits must lie inside the range that bounds it"
+        )
 
     fields = raw["request_fields"]
     if not isinstance(fields, list) or not all(isinstance(f, str) for f in fields):
@@ -293,6 +323,8 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
         checkpoint=checkpoint,
         components=components,
         steps=raw["steps"],
+        steps_min=steps_min,
+        steps_max=steps_max,
         guidance=float(guidance),
         max_pixels=max_pixels,
         request_fields=tuple(fields),

@@ -74,6 +74,7 @@ It never starts a server by itself: if none is running it exits 4 and says so.
 | `--prompt "..."` | required; the text to render |
 | `--seed N` | absent: the server picks one and returns it in `--json` |
 | `--width N` / `--height N` | absent: the entry's defaults, 1280×720 |
+| `--steps N` | absent: the entry's default, 12; the server refuses a value outside the entry's range, 8–16 |
 | `--out PATH` | absolute path; absent: `out/` with `<UTC>-<seed>.png` |
 | `--upscale` | permit the declared stage when the size exceeds the native ceiling |
 | `--json` | print the whole response object instead of the path |
@@ -125,10 +126,10 @@ curl -s -X POST localhost:8420/generate \
 curl -s -X POST localhost:8420/shutdown
 ```
 
-`POST /generate` returns the response object: `out`, `seed`, `width`, `height`,
-`model`, `census`, `duration_s`, `render_s`, `load_s`, `upscale`. Errors are
-always `{"error": {"code": ..., "message": ...}}` — `400 invalid_request` or
-`500 render_failed`, and nothing else.
+`POST /generate` returns the response object: `out`, `steps`, `seed`, `width`,
+`height`, `model`, `census`, `duration_s`, `render_s`, `load_s`, `upscale`.
+Errors are always `{"error": {"code": ..., "message": ...}}`:
+`400 invalid_request` or `500 render_failed`, and nothing else.
 
 The API sends no CORS headers and serves no page, so a browser cannot call it
 from another origin as it stands. That is a declared limitation, not an
@@ -146,16 +147,21 @@ oversight: a client either runs in the same origin or proxies.
 
 Full table and the exact mapping: `docs/protocol.md` §5.4.
 
-## The twelve guards
+## The guards
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Twelve tests, ~7 minutes, eight stills. They prove request validation, the
-lifecycle and its idempotent edges, that the warm-up is real, the census, de-
-terminism, the default folder, CLI/API parity, self-containment, single-flight,
-the upscale stage, and that the core imports nothing from the model stack.
+One test per guard: fifteen of them, about eight minutes, a dozen stills. They
+prove request validation, the lifecycle and its idempotent edges, that the
+warm-up is real, the census, determinism, the default folder, CLI/API parity,
+self-containment, single-flight, the upscale stage, one instance per card, that
+the core imports nothing from the model stack, that the entry knows no model by
+name, and that the step count is bounded by the entry.
+
+The count lives in `docs/protocol.md` §10 and nowhere else; this section names
+what the tests are for, not how many there are today.
 
 Evidence for the acceptance runs lives in `tests/e2e/<phase>/`, each with a
 committed `README.md` and a gitignored `evidence/` folder.

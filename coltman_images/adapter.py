@@ -47,8 +47,9 @@ class ModelAdapter(Protocol):
 
     `prepare` warms the pieces that stay in RAM and establishes the census;
     `encode` turns a prompt into whatever `denoise` needs; `denoise` turns that
-    opaque value and a shape into a still. The core never looks inside the value
-    `encode` returns — that is the whole point of the boundary.
+    opaque value, a shape, a seed and a step count into a still. The core never
+    looks inside the value `encode` returns — that is the whole point of the
+    boundary.
     """
 
     entry: Entry
@@ -75,8 +76,10 @@ class ModelAdapter(Protocol):
         """Turn a prompt into the opaque features `denoise` consumes."""
         ...
 
-    def denoise(self, features: object, width: int, height: int, seed: int) -> Image.Image:
-        """Render one still at `width`x`height` from `features` and `seed`."""
+    def denoise(
+        self, features: object, width: int, height: int, seed: int, steps: int
+    ) -> Image.Image:
+        """Render one still at `width`x`height` from `features`, `seed` and `steps`."""
         ...
 
     def close(self) -> None:

@@ -22,12 +22,15 @@ assertion. Every render it makes is listed here with the guard that owns it:
                                          one of them carries `upscale: true` and
                                          guard 10 borrows `upscale: null` from it
     1 x 2560x1440 POST with upscale      guard 10 (owns)
+    4 x 512x512 POST, 8/8/12/12 steps    guard 15 (owns); each value twice, because
+                                         determinism per value is part of it
 
-That is eight stills. Guard 3 costs four by protocol; guard 9 costs two because
+That is twelve stills. Guard 3 costs four by protocol; guard 9 costs two because
 concurrency cannot be borrowed; guard 10 costs one base render; the CLI still
-doubles as guard 7's second half. Nothing renders twice for the same guard and
-nothing here is a proxy for a render it did not make. Guard 14 writes one more
-still, 256×256, and it is the stub's: no model is loaded for it.
+doubles as guard 7's second half; guard 15 costs four because two step counts
+must each be proved stable and then proved different. Nothing renders twice for
+the same guard. Guard 14 writes one more still, 256×256, and it is the stub's:
+no model is loaded for it.
 
 Ordering is explicit, not incidental: methods are numbered because unittest runs
 them alphabetically, and guard 3 has to see the first render after `start`.
@@ -73,6 +76,10 @@ PORT = 8420
 
 # Protocol section 10, guard 4 and section 6.1: the entry's expected census.
 PROTOCOL_CENSUS = {"float8": 239, "plain": 282, "other": 0, "total": 521}
+
+# Protocol section 6.1 and 10, guard 15: the entry's step range, and its default.
+PROTOCOL_STEPS = {"min": 8, "max": 16}
+PROTOCOL_DEFAULT_STEPS = 12
 
 # One prompt and one seed for every still that has to be comparable. Nothing
 # declares this prompt: it is test input, not a system default.
@@ -508,7 +515,7 @@ class _U1StubAdapter:
         self.seen.append(f"encode {prompt!r}")
         return prompt
 
-    def denoise(self, features, width: int, height: int, seed: int):
+    def denoise(self, features, width: int, height: int, seed: int, steps: int):
         from PIL import Image
 
         self.seen.append(f"denoise {width}x{height} seed={seed}")
@@ -532,7 +539,7 @@ def _u1_entry(digest: str) -> dict:
         "digests": {"thing_b": f"sha256:{digest}"},
         "steps": 4,
         "guidance": 1.5,
-        "limits": {"max_pixels": U1_SIDE * U1_SIDE},
+        "limits": {"max_pixels": U1_SIDE * U1_SIDE, "steps": {"min": 3, "max": 9}},
         "request_fields": ["prompt", "seed", "width", "height", "out"],
         "expected_census": {"parameters": 2, "tensors": 3},
         "defaults": {"width": U1_SIDE, "height": U1_SIDE, "format": "png"},
@@ -970,6 +977,79 @@ class ContractCase(GuardCase):
 # ===========================================================================
 
 
+# --- guard 15: the step count is a request field, bounded by the entry ------
+#
+# The refusal half needs an adapter that records whether it was ever built, so
+# the proof is "no instance, therefore no call" rather than "the render did not
+# finish". The stub is guard 15's own, not guard 14's, so neither guard depends
+# on the other's fixture, and it is written into the run's evidence folder like
+# every other fixture this suite creates.
+
+G15_STUB = "g15stub"
+G15_SIDE = 256
+"""The stub's render size: it never touches the card, so the shape is cosmetic."""
+
+G15_RENDER_SIDE = 512
+"""Guard 15's real stills. Steps are the variable; the size is kept small so the
+guard costs four short renders instead of four 1280x720 ones."""
+
+G15_STEPS = (8, 8, 12, 12)
+"""Two runs at each of the two values, interleaved by value: the pair proves
+determinism per value, the two pairs prove the values differ."""
+
+
+class _G15StubAdapter:
+    """A model that exists only to be counted: zero instances means zero calls."""
+
+    name = G15_STUB
+    instances: list["_G15StubAdapter"] = []
+
+    def __init__(self, entry) -> None:
+        self.entry = entry
+        self.last_load_s = 0.0
+        type(self).instances.append(self)
+
+    def prepare(self) -> None:
+        pass
+
+    def census(self) -> dict[str, int]:
+        return dict(self.entry.expected_census)
+
+    def encode(self, prompt: str) -> str:
+        return prompt
+
+    def denoise(self, features, width: int, height: int, seed: int, steps: int):
+        from PIL import Image
+
+        return Image.new("RGB", (width, height), (1, 2, 3))
+
+    def close(self) -> None:
+        pass
+
+
+def _g15_entry(steps: int = PROTOCOL_DEFAULT_STEPS, name: str = "g15-entry.yaml") -> pathlib.Path:
+    """A synthetic entry the law accepts, with a range this guard can straddle."""
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    asset = EVIDENCE / "g15-asset.bin"
+    asset.write_bytes(b"guard 15: a component the stub never reads\n")
+    document = {
+        "id": "g15-stub-model",
+        "adapter": G15_STUB,
+        "checkpoint": str(asset),
+        "components": {"weights": str(asset)},
+        "steps": steps,
+        "guidance": 0.0,
+        "limits": {"max_pixels": G15_SIDE * G15_SIDE, "steps": dict(PROTOCOL_STEPS)},
+        "request_fields": ["prompt", "seed", "width", "height", "out", "steps"],
+        "expected_census": {"parameters": 1},
+        "defaults": {"width": G15_SIDE, "height": G15_SIDE, "format": "png"},
+        "warmup": {"width": G15_SIDE, "height": G15_SIDE, "prompt": "warm up", "seed": 0},
+    }
+    path = EVIDENCE / name
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
+
+
 class ServiceCase(GuardCase):
     """One server for the whole class; guard 2's own test stops it at the end."""
 
@@ -1390,7 +1470,195 @@ class ServiceCase(GuardCase):
             f"a request at the native size ran the stage anyway: {native_permitted.get('upscale')}",
         )
 
-    # --- 7: guard 1, on a quiet queue -------------------------------------
+    # --- 7: guard 15 owns four stills -------------------------------------
+
+    def test_0650_guard15_steps(self) -> None:
+        """Guard 15: the step count is a request field bounded by the entry.
+
+        Four facts, in the order the door sees them:
+
+        1. The law at load. The entry's own `steps` is the default a request
+           inherits, so a default outside `limits.steps` refuses the entry — a
+           range that does not contain its own default is not a range.
+        2. The door and the adapter. A step outside the range, passed through
+           `render.render` to a synthetic entry naming a stub, raises before the
+           stub is built: zero instances is the proof that no adapter call was
+           made. A render would only prove the still was not written.
+        3. The service. The same two out-of-range values over HTTP are
+           `400 invalid_request` naming the range, and the worker counters do not
+           move; an in-range value appears in the response as the value used; a
+           request without `steps` reports the entry's default (borrowed from
+           guard 3, which names none).
+        4. The bytes. 8 and 12 steps at one seed produce different files, and
+           each is identical across two runs — the response saying `8` proves
+           nothing if the sampler ran twelve forwards anyway.
+        """
+        self.obs("guard02.health")
+        from coltman_images import adapter as adapter_module
+        from coltman_images.entry import EntryError, load_entry
+        from coltman_images.render import render
+
+        entry = load_entry()
+        low, high = PROTOCOL_STEPS["min"], PROTOCOL_STEPS["max"]
+        outside = (low - 1, high + 1)
+        self.assertEqual(
+            (entry.steps_min, entry.steps_max),
+            (low, high),
+            "the entry's limits.steps does not carry the range the law declares",
+        )
+        self.assertEqual(
+            entry.steps, PROTOCOL_DEFAULT_STEPS, "the entry's default is not the declared 12"
+        )
+
+        # 1. the entry's default must lie inside the range it is bounded by.
+        with self.assertRaises(EntryError) as loose:
+            load_entry(_g15_entry(steps=low - 1, name="g15-entry-outside.yaml"))
+        self.assertIn("limits.steps", str(loose.exception), "the refusal did not name the range")
+        self.assertIn(f"{low}..{high}", str(loose.exception), "the refusal did not name the bounds")
+
+        # 2. the door: out of range refused before the adapter exists.
+        adapter_module._REGISTRY[G15_STUB] = f"{__name__}:_G15StubAdapter"
+        stub_entry = load_entry(_g15_entry())
+        _G15StubAdapter.instances.clear()
+        never_written = EVIDENCE / "g15-refused.png"
+        never_written.unlink(missing_ok=True)
+        with self.assertRaises(ValueError) as refused:
+            render(
+                stub_entry,
+                prompt="a step count outside the range",
+                seed=SEED % 100,
+                width=G15_SIDE,
+                height=G15_SIDE,
+                steps=low - 1,
+                out=str(never_written),
+                write=False,
+            )
+        adapter_refusal = str(refused.exception)
+        self.assertIn("steps", adapter_refusal, f"the refusal does not name the field: {adapter_refusal}")
+        self.assertIn(f"{low}..{high}", adapter_refusal, f"the refusal does not name the range: {adapter_refusal}")
+        self.assertEqual(
+            _G15StubAdapter.instances, [], "a refused step reached the adapter: the stub was built"
+        )
+        self.assertFalse(never_written.exists(), "a refused step wrote a still")
+
+        # 3. the service: same refusal at the HTTP door, no worker involvement.
+        def _service_counters() -> tuple[int, int]:
+            return _render_count(), _render_failure_count()
+
+        counters_before = _service_counters()
+        service_refusals: dict[int, dict] = {}
+        for bad in outside:
+            status, body = _generate({"prompt": PROMPT, "steps": bad})
+            service_refusals[bad] = {"status": status, "body": body}
+            self.assertEqual(status, 400, f"steps {bad}: expected 400, got {status} {body}")
+            error = body.get("error", {})
+            self.assertEqual(error.get("code"), "invalid_request", f"steps {bad}: {body}")
+            message = str(error.get("message", ""))
+            self.assertIn("steps", message, f"steps {bad}: the refusal does not name the field: {message}")
+            self.assertIn(
+                f"{low}..{high}", message, f"steps {bad}: the refusal does not name the range: {message}"
+            )
+        self.assertEqual(
+            _service_counters(), counters_before, "a refused step reached the worker"
+        )
+        counters_after_refusals = _service_counters()
+
+        # An absent `steps` means the entry's default: guard 3's requests name none.
+        defaulted = self.obs("guard03.renders")[0]["body"].get("steps")
+        self.assertEqual(
+            defaulted, PROTOCOL_DEFAULT_STEPS, f"a request without steps rendered at {defaulted}"
+        )
+
+        # 4. the bytes: 8 and 12 differ, each stable across two runs.
+        runs: list[dict] = []
+        for index, steps in enumerate(G15_STEPS, start=1):
+            destination = FILES / f"g15-run{index}-steps{steps}.png"
+            destination.unlink(missing_ok=True)
+            began = time.perf_counter()
+            status, body = _generate(
+                {
+                    "prompt": PROMPT,
+                    "seed": SEED,
+                    "width": G15_RENDER_SIDE,
+                    "height": G15_RENDER_SIDE,
+                    "steps": steps,
+                    "out": str(destination),
+                }
+            )
+            runs.append(
+                {
+                    "steps": steps,
+                    "status": status,
+                    "body": body,
+                    "wall_s": round(time.perf_counter() - began, 3),
+                    "path": str(destination),
+                    "sha256": _sha256(destination) if destination.is_file() else "",
+                }
+            )
+
+        _put(
+            "guard15",
+            {
+                "range": PROTOCOL_STEPS,
+                "default": PROTOCOL_DEFAULT_STEPS,
+                "entry": {"steps": entry.steps, "min": entry.steps_min, "max": entry.steps_max},
+                "entry_refusal": str(loose.exception),
+                "adapter_refusal": adapter_refusal,
+                "adapter_instances": len(_G15StubAdapter.instances),
+                "refused_still_written": never_written.exists(),
+                "service_refusals": service_refusals,
+                "render_counters": {"before": counters_before, "after_refusals": counters_after_refusals},
+                "defaulted_response_steps": defaulted,
+                "runs": runs,
+            },
+        )
+
+        print(
+            f"guard 15: entry steps {entry.steps} inside limits.steps "
+            f"{entry.steps_min}..{entry.steps_max}; a default of {low - 1} refused at load "
+            f"({loose.exception})"
+        )
+        print(
+            f"guard 15: steps {low - 1} refused before the adapter existed — "
+            f"{len(_G15StubAdapter.instances)} stub instance(s) built ({adapter_refusal})"
+        )
+        print(
+            f"guard 15: POST steps {outside[0]} and {outside[1]} → 400 invalid_request; "
+            f"worker counters {counters_before} → {counters_after_refusals}"
+        )
+        print(f"guard 15: a request without steps rendered at the entry default ({defaulted})")
+
+        by_steps: dict[int, list[dict]] = {}
+        for run in runs:
+            by_steps.setdefault(run["steps"], []).append(run)
+        for steps, pair in sorted(by_steps.items()):
+            digests = {run["sha256"] for run in pair}
+            render_s = " / ".join(f"{run['body'].get('render_s')}" for run in pair)
+            print(
+                f"guard 15: steps {steps} → {len(digests)} distinct digest(s) over "
+                f"{len(pair)} runs, sha256 {pair[0]['sha256'][:16]}…, render_s {render_s} s"
+            )
+            self.assertEqual(len(digests), 1, f"steps {steps} is not deterministic: {sorted(digests)}")
+
+        for run in runs:
+            self.assertEqual(run["status"], 200, f"steps {run['steps']} failed: {run['body']}")
+            self.assertEqual(
+                run["body"].get("steps"),
+                run["steps"],
+                f"the response says {run['body'].get('steps')} for a request of {run['steps']}",
+            )
+            still = pathlib.Path(run["path"])
+            self.assertTrue(still.is_file(), f"{still} was not written")
+            self.assertEqual(_png_size(still), (G15_RENDER_SIDE, G15_RENDER_SIDE))
+
+        eight = by_steps[8][0]["sha256"]
+        twelve = by_steps[12][0]["sha256"]
+        self.assertNotEqual(
+            eight, twelve, "8 and 12 steps produced the same bytes: the step count never reached the sampler"
+        )
+        print(f"guard 15: steps 8 {eight[:16]}… against steps 12 {twelve[:16]}… → different bytes")
+
+    # --- 8: guard 1, on a quiet queue -------------------------------------
 
     def test_0700_guard01_request_validation(self) -> None:
         """Guard 1: four malformed requests refused, none of them reaching the card.
@@ -1458,7 +1726,7 @@ class ServiceCase(GuardCase):
         self.assertEqual(renders_after, renders_before, "a refused request reached the worker")
         self.assertEqual(failures_after, failures_before, "a refused request reached the renderer")
 
-    # --- 8: guard 4, the measured half ------------------------------------
+    # --- 9: guard 4, the measured half ------------------------------------
 
     def test_0800_guard04_census_measured(self) -> None:
         """Guard 4: the measured census equals the entry's, in /health and in every response."""
@@ -1484,7 +1752,7 @@ class ServiceCase(GuardCase):
             self.assertEqual(census, PROTOCOL_CENSUS, f"{where} reports {census}, not the declared census")
             self.assertEqual(census, dict(entry.expected_census), f"{where} disagrees with the entry")
 
-    # --- 9: guard 2, last, because it stops the server --------------------
+    # --- 10: guard 2, last, because it stops the server -------------------
 
     def test_0850_guard12_one_instance(self) -> None:
         """Guard 12: one card, one instance — a deleted state file cannot buy a second.

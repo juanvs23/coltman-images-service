@@ -104,6 +104,7 @@ class _Job:
         "prompt",
         "result",
         "seed",
+        "steps",
         "upscale",
         "width",
     )
@@ -116,6 +117,7 @@ class _Job:
         seed: int,
         width: int,
         height: int,
+        steps: int | None,
         upscale: bool,
         out: str | None,
     ) -> None:
@@ -124,6 +126,7 @@ class _Job:
         self.seed = seed
         self.width = width
         self.height = height
+        self.steps = steps
         self.upscale = upscale
         self.out = out
         self.result: dict[str, Any] | None = None
@@ -266,6 +269,7 @@ class WarmServer:
                         seed=job.seed,
                         width=job.width,
                         height=job.height,
+                        steps=job.steps,
                         out=job.out,
                         upscale=job.upscale,
                         adapter=self.adapter,
@@ -562,6 +566,7 @@ class _Handler(BaseHTTPRequestHandler):
             seed=seed,
             width=width,
             height=height,
+            steps=request.get("steps"),
             upscale=bool(request.get("upscale", False)),
             out=request.get("out"),
         )
@@ -587,6 +592,7 @@ class _Handler(BaseHTTPRequestHandler):
             200,
             {
                 "out": job.result["out"],
+                "steps": job.result["steps"],
                 "seed": job.result["seed"],
                 "width": job.result["width"],
                 "height": job.result["height"],

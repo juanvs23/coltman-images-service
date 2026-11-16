@@ -204,6 +204,7 @@ def render(
     seed: int | None = None,
     width: int | None = None,
     height: int | None = None,
+    steps: int | None = None,
     out: str | None = None,
     upscale: bool = False,
     adapter: ModelAdapter | None = None,
@@ -213,9 +214,12 @@ def render(
 
     `seed=None` picks one and returns the value actually used. `width`/`height`
     are the size of the file the client receives and default from the entry.
-    `out=None` writes into `out/` at the project root. `upscale=True` is the
-    client permitting the declared stage to synthesize the pixels above this
-    card's native ceiling; it is the only way past that ceiling.
+    `steps=None` renders at the entry's default and a value inside
+    `limits.steps` overrides it for this still; the returned `steps` is the
+    value actually used. `out=None` writes into `out/` at the project root.
+    `upscale=True` is the client permitting the declared stage to synthesize the
+    pixels above this card's native ceiling; it is the only way past that
+    ceiling.
 
     `adapter` is the warm adapter a server built at boot; when it is omitted the
     callable builds and prepares its own and closes it again, which is the cold
@@ -231,12 +235,15 @@ def render(
     request: dict[str, Any] = {"prompt": prompt, "width": width, "height": height}
     if seed is not None:
         request["seed"] = seed
+    if steps is not None:
+        request["steps"] = steps
     if out is not None:
         request["out"] = out
     if upscale:
         request["upscale"] = True
     _validate(entry, request)
     seed = _seed_or_pick(seed)
+    steps = entry.steps if steps is None else steps
     destination = _output_path(out, seed) if write else None
 
     owned = adapter is None
@@ -256,7 +263,7 @@ def render(
 
         started = time.perf_counter()
         features = model.encode(prompt)
-        image = model.denoise(features, plan.base_width, plan.base_height, seed)
+        image = model.denoise(features, plan.base_width, plan.base_height, seed, steps)
         finished = time.perf_counter()
         observed = model.census()
         # `last_load_s` covers the encoder and the denoiser, measured from the
@@ -306,6 +313,7 @@ def render(
     )
     return {
         "out": str(destination) if destination is not None else "",
+        "steps": steps,
         "seed": seed,
         "width": width,
         "height": height,

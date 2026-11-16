@@ -392,6 +392,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
         payload["width"] = args.width
     if args.height is not None:
         payload["height"] = args.height
+    if args.steps is not None:
+        payload["steps"] = args.steps
     if args.out is not None:
         payload["out"] = str(pathlib.Path(args.out).expanduser().resolve())
     if args.upscale:
@@ -440,6 +442,12 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--seed", type=int, default=None, help="absent: the server picks one and returns it")
     generate.add_argument("--width", type=int, default=None, help="absent: the entry's default")
     generate.add_argument("--height", type=int, default=None, help="absent: the entry's default")
+    generate.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="absent: the entry's default; the server refuses a value outside the entry's range",
+    )
     generate.add_argument("--out", default=None, help="absolute path; absent: the default folder out/")
     generate.add_argument(
         "--upscale",

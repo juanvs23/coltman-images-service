@@ -23,8 +23,14 @@ guidance: 0.0
 # The largest area this card has been measured to render: 1280x720, 43.5 s,
 # 6698 MiB reserved leaving 1159 MiB of slack. Raising it is a measurement,
 # not a configuration change.
+#
+# `steps` is the range the ladder measured and the operator ruled (protocol
+# section 12): 12, declared as `steps` above, stays inside it; 8-10 is the fast
+# mode, 14 the cut, 16 the ceiling. The same weights serve every value, so
+# nothing swaps; a request outside the range is refused at the door.
 limits:
   max_pixels: 921600
+  steps: {min: 8, max: 16}
 
 request_fields:
   - prompt
@@ -32,6 +38,7 @@ request_fields:
   - width
   - height
   - out
+  - steps
   - upscale
 
 expected_census:
