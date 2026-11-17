@@ -223,6 +223,7 @@ def render(
     out: str | None = None,
     upscale: bool = False,
     loras: list[str] | None = None,
+    images: list[str] | None = None,
     adapter: ModelAdapter | None = None,
     write: bool = True,
     limits: Any | None = None,
@@ -244,6 +245,13 @@ def render(
     above the deployment's cap all refuse first (protocol section 4.1). The
     resolved selection is handed to the adapter, which is the only thing that
     knows how its runtime applies a LoRA (section 6.3).
+
+    `images` is the request's `image` list — absolute paths the caller named, the
+    same shape as `out` (section 4.1). The count is the entry's declaration and
+    each file must exist, both refused at the door before any adapter is built;
+    the paths are then carried, in order, to the adapter that passes them to its
+    runtime (section 6.3). The response echoes what was used, so a caller can
+    read back which files rendered its still.
 
     `limits` is the deployment's effective limits for this entry, resolved at
     boot by `coltman_images/host.py`; absent, the entry's own limits apply —
@@ -272,11 +280,14 @@ def render(
         request["upscale"] = True
     if loras is not None:
         request["lora"] = list(loras)
+    if images is not None:
+        request["image"] = list(images)
     _validate(entry, request, limits)
-    # Resolved after the door has accepted the request, so a bad alias, weight or
-    # count never reaches an adapter. The adapter receives the selection and
-    # decides how its runtime applies it (section 6.3).
+    # Resolved after the door has accepted the request, so a bad alias, weight,
+    # count or path never reaches an adapter. The adapter receives the selection
+    # and decides how its runtime applies it (section 6.3).
     selected = entry.resolve_loras(request)
+    references = entry.resolve_images(request)
     seed = _seed_or_pick(seed)
     steps = entry.steps if steps is None else steps
     destination = _output_path(out, seed) if write else None
@@ -297,7 +308,7 @@ def render(
         torch.cuda.reset_peak_memory_stats()
 
         started = time.perf_counter()
-        features = model.encode(prompt, loras=selected)
+        features = model.encode(prompt, loras=selected, images=references)
         image = model.denoise(features, plan.base_width, plan.base_height, seed, steps)
         finished = time.perf_counter()
         observed = model.census()
@@ -354,6 +365,7 @@ def render(
         "height": height,
         "model": entry.id,
         "census": observed,
+        "image": [str(path) for path in references],
         "render_s": round(render_s, 3),
         "load_s": round(load_s, 3),
         "upscale": stage,

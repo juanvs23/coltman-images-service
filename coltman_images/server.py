@@ -153,6 +153,7 @@ class _Job:
         "done",
         "error",
         "height",
+        "images",
         "loras",
         "out",
         "prompt",
@@ -175,6 +176,7 @@ class _Job:
         upscale: bool,
         out: str | None,
         loras: list[str] | None = None,
+        images: list[str] | None = None,
     ) -> None:
         self.accepted_at = accepted_at
         self.prompt = prompt
@@ -185,6 +187,7 @@ class _Job:
         self.upscale = upscale
         self.out = out
         self.loras = loras
+        self.images = images
         self.result: dict[str, Any] | None = None
         self.error: BaseException | None = None
         self.done = threading.Event()
@@ -379,6 +382,7 @@ class WarmServer:
                         out=job.out,
                         upscale=job.upscale,
                         loras=job.loras,
+                        images=job.images,
                         adapter=self.adapter,
                         limits=self.limits,
                     )
@@ -500,6 +504,7 @@ class WarmServer:
             upscale=bool(request.get("upscale", False)),
             out=request.get("out"),
             loras=request.get("lora"),
+            images=request.get("image"),
         )
         self._enqueue(job)
         job.done.wait()
@@ -511,7 +516,9 @@ class WarmServer:
         # The declared order of protocol section 4.2, with `duration_s` added and
         # the load split kept last: it is the one field this server reports that
         # `render.render` also reports, and it is where the per-request swap cost
-        # is visible.
+        # is visible. `image` echoes what the still was conditioned on — the
+        # reference paths, in the order the caller named them — so a caller can
+        # read back the files that rendered it; an empty list means none.
         return {
             "out": job.result["out"],
             "steps": job.result["steps"],
@@ -520,6 +527,7 @@ class WarmServer:
             "height": job.result["height"],
             "model": job.result["model"],
             "census": job.result["census"],
+            "image": job.result["image"],
             "duration_s": round(time.perf_counter() - accepted_at, 3),
             "render_s": job.result["render_s"],
             "upscale": job.result["upscale"],

@@ -62,12 +62,20 @@ class ModelAdapter(Protocol):
     an adapter without it is refused at construction (protocol section 6.3), so
     a selector the runtime cannot honour never becomes a still that quietly
     ignored it.
+
+    `supports_images` is the same declaration for the entry's reference block: an
+    entry that declares how many reference images it accepts and names an adapter
+    that cannot carry one is refused at boot. A reference the runtime would drop
+    is a still that quietly ignored the picture the caller sent.
     """
 
     entry: Entry
     name: str
     supports_loras: bool
     """Whether this adapter applies a request's LoRA selection (section 6.3)."""
+
+    supports_images: bool
+    """Whether this adapter carries a request's reference images to its model."""
 
     last_load_s: float
     """Seconds the last `denoise` spent putting its model on the card.
@@ -86,14 +94,23 @@ class ModelAdapter(Protocol):
         """The measured parameter census of the model this adapter loaded."""
         ...
 
-    def encode(self, prompt: str, loras: tuple[Lora, ...] = ()) -> object:
-        """Turn a prompt and the request's LoRAs into the opaque `denoise` value.
+    def encode(
+        self, prompt: str, loras: tuple[Lora, ...] = (), images: tuple[Any, ...] = ()
+    ) -> object:
+        """Turn a prompt, the LoRAs and the references into the opaque `denoise` value.
 
         `loras` is the request's selection, already resolved by the core against
         the entry's catalog and validated at the door — aliases, files and
         weights (section 4.1). How an adapter applies one is its own business
         (a tag, a flag, a separate pass); the core passes the selection and
         knows no syntax.
+
+        `images` is the request's reference list, resolved to absolute paths in
+        the order the caller named them (section 4.1). An adapter that declares
+        `supports_images` is the only one this is ever called on with a non-empty
+        tuple, because `load_adapter` refuses the other combination at boot — and
+        an adapter that carries them must keep the order, because a reference's
+        index is what the model conditions on.
         """
         ...
 
@@ -150,5 +167,13 @@ def load_adapter(entry: Entry) -> ModelAdapter:
             f"{entry.adapter!r} adapter applies no LoRA — an entry that declares LoRAs its "
             "adapter cannot apply is refused at boot rather than silently ignored; remove the "
             "catalog or serve this entry through an adapter that applies it (protocol section 6.3)"
+        )
+    if entry.images_max and not getattr(adapter, "supports_images", False):
+        raise AdapterError(
+            f"adapter: entry {entry.id!r} declares that it accepts up to {entry.images_max} "
+            f"reference image(s) and the {entry.adapter!r} adapter carries none to its model — a "
+            "request field the runtime would ignore is refused at boot rather than silently "
+            "dropped; remove the entry's image block or serve it through an adapter that passes "
+            "references to its model (protocol section 6.3)"
         )
     return adapter

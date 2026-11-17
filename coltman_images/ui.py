@@ -114,7 +114,14 @@ def size_for(entry: Any, aspect: str, factor: int) -> tuple[int, int]:
 
 
 def request_from_form(
-    prompt: str, seed: Any, hd: bool, steps: Any, aspect: str, entry: Any, factor: int
+    prompt: str,
+    seed: Any,
+    hd: bool,
+    steps: Any,
+    aspect: str,
+    entry: Any,
+    factor: int,
+    image: str | None = None,
 ) -> dict[str, Any]:
     """The protocol section 4.1 request this form describes. Pure — no I/O.
 
@@ -135,6 +142,14 @@ def request_from_form(
     only thing that decides whether it is a usable seed, and a page that rounded
     it would be changing the request behind the operator's back.
 
+    `image` is the reference the operator dropped on the page, as the **path**
+    gradio hands over (`type="filepath"`), and it is sent only when a file is
+    there: a page with no reference sends exactly the request it sent before the
+    control existed. The path is the request's field and nothing else — the page
+    does not open the file, measure it or derive a size from it, because the box
+    is the entry's and the aspect's to decide (sections 4.1 and 5.5). The count
+    and the existence are the door's to accept or refuse.
+
     `entry` is the resolved entry and `factor` its stage's declared scale; both
     are arguments rather than module constants because `limits.max_pixels` and
     `limits.steps` belong to the entry (roadmap P9 step 4).
@@ -149,6 +164,8 @@ def request_from_form(
     request["height"] = height
     if hd:
         request["upscale"] = True
+    if image:
+        request["image"] = [str(image)]
     return request
 
 
@@ -162,7 +179,9 @@ def render(app: Any, request: dict[str, Any]) -> dict[str, Any]:
     return app.submit(request)
 
 
-def generate(app: Any, prompt: str, seed: Any, hd: bool, steps: Any, aspect: str) -> Iterator[Any]:
+def generate(
+    app: Any, prompt: str, seed: Any, hd: bool, steps: Any, aspect: str, image: str | None = None
+) -> Iterator[Any]:
     """Submit one request and report while it waits: status strings, then the response.
 
     `submit()` blocks until the still exists — ~46 s at 1280x720, and longer
@@ -185,7 +204,7 @@ def generate(app: Any, prompt: str, seed: Any, hd: bool, steps: Any, aspect: str
         raise RuntimeError("generate: HD needs the stage's declaration, and none is loaded")
     try:
         request = request_from_form(
-            prompt, seed, hd, steps, aspect, entry, int(declaration.scale) if hd else 1
+            prompt, seed, hd, steps, aspect, entry, int(declaration.scale) if hd else 1, image
         )
     except ValueError as exc:
         yield f"the page could not build that request — {exc}"
@@ -259,7 +278,9 @@ def build(app: Any) -> gr.Blocks:
         `steps`, the boxes from `size_for`, and the ceiling and the stage from the
         entry and the declaration. A number written here would be a number the
         next entry inherits wrongly, so there is none — the strings are templates
-        and guard 13 scans them for the entry's sizes.
+        and guard 13 scans them for the entry's sizes. The reference paragraph is
+        emitted only when the entry declares that capability, and its count is
+        `entry.images_max`.
         """
         boxes = {shape: (size_for(entry, shape, 1), size_for(entry, shape, factor)) for shape in ASPECT_PRESETS}
         ceiling = int(entry.max_pixels)
@@ -280,48 +301,61 @@ def build(app: Any) -> gr.Blocks:
         )
         default_width = int(entry.defaults["width"])
         default_height = int(entry.defaults["height"])
-        return "\n\n".join(
-            [
-                "**prompt** — The encoder is the pipeline's own prompt encoder, not a language "
-                "model bolted on. Measured on this deployment on 2026-11-16: the same "
-                "description that kept `blue skin` in English lost it in Spanish at the same "
-                "seed, so keep the attributes that matter in English — or the whole prompt.",
-                "**seed** — A render does not start from an empty canvas — it starts from noise. "
-                "The seed chooses which noise. **Same seed and the same everything else gives "
-                "byte-identical files**; a different seed gives a different composition, not a "
-                "better one. The seed alone does not reproduce a still: the prompt, the steps, "
-                "the shape and the model must match too. No number is better than another; when "
-                "one gives you something you like, keep it.",
-                "**steps** — Each step is one pass of the model over the noise. Cost is linear — "
-                f"measured on this deployment at 3.9 s per step at {default_width}×{default_height}, "
-                "the box this entry renders by default — and the curve turns, measured here: below the entry's range the "
-                "scene is not settled, above it the stills differ but do not improve. The range "
-                f"and the default are the entry's, not the page's: {entry.steps_min} to "
-                f"{entry.steps_max}, defaulting to {entry.steps}.",
-                "**size** — **SD** is the native render: exactly the pixels the model produced. "
-                "**HD** delivers a larger still by enlarging a base render with the declared "
-                "stage — those pixels are synthesized, not rendered, and the panel names the base "
-                "it started from so the two cannot be confused. HD only runs when the size is "
-                "above the ceiling and only because you asked for it. On this entry the ceiling "
-                f"is {entry.max_pixels} px and the stage is ×{factor}.",
-                "**aspect** — Each shape's size is the largest box at that proportion whose sides "
-                "stay on the 16-pixel grid and whose area fits the entry's ceiling — and for HD, "
-                "the stage's reach. So a shape can never ask for something the card would refuse. "
-                f"{short_sentence} On the grid, the next size up for a shape that stops short "
-                "would overshoot, so the page shrinks to the largest that fits and the panel tells "
-                "you what you got.\n\n"
-                "| shape | SD | HD |\n| --- | --- | --- |\n" + table,
-                "**the panel** — Every number on the result comes from the response, never from "
-                "the page: the size delivered, the base the stage started from, the census the "
-                "loader measured — key by key, whatever that model declares — and `render_s`, "
-                "`load_s` and `duration_s` kept apart, because the last one is the only one that "
-                "shows queue wait and load.",
-                "**the status line** — While a request runs, the line quotes the server's queue "
-                "depth. It is quoted and never interpreted: a depth cannot say whether the "
-                "request ahead is waiting or already on the card. A quiet page and a hung page "
-                "must not look the same.",
-            ]
-        )
+        paragraphs = [
+            "**prompt** — The encoder is the pipeline's own prompt encoder, not a language "
+            "model bolted on. Measured on this deployment on 2026-11-16: the same "
+            "description that kept `blue skin` in English lost it in Spanish at the same "
+            "seed, so keep the attributes that matter in English — or the whole prompt.",
+            "**seed** — A render does not start from an empty canvas — it starts from noise. "
+            "The seed chooses which noise. **Same seed and the same everything else gives "
+            "byte-identical files**; a different seed gives a different composition, not a "
+            "better one. The seed alone does not reproduce a still: the prompt, the steps, "
+            "the shape and the model must match too. No number is better than another; when "
+            "one gives you something you like, keep it.",
+            "**steps** — Each step is one pass of the model over the noise. Cost is linear — "
+            f"measured on this deployment at 3.9 s per step at {default_width}×{default_height}, "
+            "the box this entry renders by default — and the curve turns, measured here: below the entry's range the "
+            "scene is not settled, above it the stills differ but do not improve. The range "
+            f"and the default are the entry's, not the page's: {entry.steps_min} to "
+            f"{entry.steps_max}, defaulting to {entry.steps}.",
+            "**size** — **SD** is the native render: exactly the pixels the model produced. "
+            "**HD** delivers a larger still by enlarging a base render with the declared "
+            "stage — those pixels are synthesized, not rendered, and the panel names the base "
+            "it started from so the two cannot be confused. HD only runs when the size is "
+            "above the ceiling and only because you asked for it. On this entry the ceiling "
+            f"is {entry.max_pixels} px and the stage is ×{factor}.",
+            "**aspect** — Each shape's size is the largest box at that proportion whose sides "
+            "stay on the 16-pixel grid and whose area fits the entry's ceiling — and for HD, "
+            "the stage's reach. So a shape can never ask for something the card would refuse. "
+            f"{short_sentence} On the grid, the next size up for a shape that stops short "
+            "would overshoot, so the page shrinks to the largest that fits and the panel tells "
+            "you what you got.\n\n"
+            "| shape | SD | HD |\n| --- | --- | --- |\n" + table,
+            "**the panel** — Every number on the result comes from the response, never from "
+            "the page: the size delivered, the base the stage started from, the census the "
+            "loader measured — key by key, whatever that model declares — and `render_s`, "
+            "`load_s` and `duration_s` kept apart, because the last one is the only one that "
+            "shows queue wait and load.",
+            "**the status line** — While a request runs, the line quotes the server's queue "
+            "depth. It is quoted and never interpreted: a depth cannot say whether the "
+            "request ahead is waiting or already on the card. A quiet page and a hung page "
+            "must not look the same.",
+        ]
+        if entry.images_max:
+            # Computed, like every other number here: the count is the entry's
+            # declaration of what the model accepts, and the paragraph exists only
+            # for a model that declares it.
+            paragraphs.insert(
+                1,
+                "**reference image** — Drop an image here to condition the render on it: the "
+                "model reads a picture as a reference as well as a prompt, and it edits or "
+                "re-renders from it rather than treating it as a canvas. The prompt still "
+                "applies — say what you want done with the picture, not what the picture is. "
+                f"This model accepts up to {entry.images_max} references; the page sends the "
+                "one you drop, and leaving the box empty sends the request the API serves with "
+                "no reference at all.",
+            )
+        return "\n\n".join(paragraphs)
 
     def _describe(response: dict[str, Any]) -> str:
         """The honest copy, from the response and never from a constant."""
@@ -348,24 +382,31 @@ def build(app: Any) -> gr.Blocks:
             "",
             f"render_s {response.get('render_s')} · load_s {response.get('load_s')} · "
             f"duration_s {response.get('duration_s')}",
-            "",
-            f"written to `{response.get('out')}`",
         ]
+        references = response.get("image") or []
+        if references:
+            # The response echoes the reference paths it was conditioned on
+            # (section 4.2), so the panel states them instead of assuming the box
+            # that is on screen now is what rendered this still.
+            lines.extend(["", "reference — " + ", ".join(f"`{path}`" for path in references)])
+        lines.extend(["", f"written to `{response.get('out')}`"])
         return "\n".join(lines)
 
     def _submit(
-        prompt: str, seed: Any, quality: str, steps: Any, aspect: str
+        prompt: str, image: Any, seed: Any, quality: str, steps: Any, aspect: str
     ) -> Iterator[tuple[Any, ...]]:
         """Drive `generate` and hand its yields to the three outputs.
 
         `seed` is passed on as the component gives it — `gr.Number` with
         `precision=0` hands an integer or nothing — `steps` as the slider hands
         it, which is an integer because the slider's `precision` is 0, and
-        `aspect` as the operator's label. The server owns the rules about all
-        three, and the size is computed from the entry and the stage, never
-        taken from the form.
+        `aspect` as the operator's label. `image` is the reference, as the path
+        `gr.Image(type="filepath")` hands over: a string when a file is there and
+        nothing when the box is empty, and `request_from_form` sends it only in
+        the first case. The server owns the rules about all of them, and the size
+        is computed from the entry and the stage, never taken from the form.
         """
-        for update in generate(app, prompt, seed, quality == HD_LABEL, steps, aspect):
+        for update in generate(app, prompt, seed, quality == HD_LABEL, steps, aspect, image):
             if isinstance(update, dict):
                 yield f"done — {update.get('out')}", update.get("out"), _describe(update)
             else:
@@ -384,6 +425,20 @@ def build(app: Any) -> gr.Blocks:
                     placeholder="what to render",
                     info="what to render — English gets the most out of the encoder",
                 )
+                reference = gr.Image(
+                    label="reference image",
+                    type="filepath",
+                    visible=bool(entry.images_max),
+                    placeholder="drop an image to edit — or leave it empty",
+                )
+                if entry.images_max:
+                    # The line beneath the control exists only when the control
+                    # does: a page that explained a hidden box would describe a
+                    # capability the served entry does not have.
+                    gr.Markdown(
+                        "_reference — an image the model edits or conditions on; empty renders "
+                        "from the prompt alone_"
+                    )
                 with gr.Row():
                     seed = gr.Number(
                         label="seed",
@@ -426,7 +481,7 @@ def build(app: Any) -> gr.Blocks:
                 details = gr.Markdown("")
         submit.click(
             _submit,
-            inputs=[prompt, seed, quality, steps, aspect],
+            inputs=[prompt, reference, seed, quality, steps, aspect],
             outputs=[status, still, details],
             api_name="generate",
         )

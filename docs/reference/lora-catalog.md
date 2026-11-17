@@ -94,14 +94,23 @@ Three facts, and the third is the one that shaped this document:
 
 ## 4. The thing that decides the toolbox: text-to-image or edit
 
-**The request this service accepts carries a prompt, a seed, a size, a step count
-and an output path. It carries no image.** Half of the "production tools" in the
-klein family are **editing** LoRAs: they expect a picture in, a mask, a highlighted
-region or a clothing-agnostic body, and their trigger text says so. Without an
-input image they cannot be used, and a catalogue that lists them beside the
-text-to-image ones would be a list of wishes.
+**The request this service accepts carries a prompt, a seed, a size, a step count,
+an output path, a LoRA selection and — since 2026-11-17 — a list of reference
+images.** Half of the "production tools" in the klein family are **editing** LoRAs:
+they expect a picture in, a mask, a highlighted region or a clothing-agnostic body,
+and their trigger text says so. Until the request could carry one they could not be
+used, and the catalogue was split in two because a list that put them beside the
+text-to-image ones would have been a list of wishes.
 
-So the catalogue is split in two, and the split is the honest part of it.
+The split stays, because it is about what each file expects and not about what the
+service can carry: §5.1 is what works from a prompt, §5.2 is what needs a picture
+in. What changed is that §5.2 is now **reachable**. The request's `image` field
+takes absolute paths, the entry declares how many references the model accepts
+(`image: {max: 10}` on klein, none on Z-Image), and `flux2klein_sd` hands each one
+to the runtime as `-r` — klein's own multi-reference conditioning, not a wrapper.
+One of the nine has now been rendered here (`background-remove`, §5.2) and the
+rest have not; §10 keeps that distinction, and no claim in this document becomes
+this project's own until a still has been seen.
 
 ## 5. FLUX.2 [klein] 4B — what each one does
 
@@ -134,7 +143,23 @@ number were read from the Hub; a dash means the size is read at resolve time wit
 the axes; the point is a **recurring character** — the same person across ten
 images — without training anything.
 
-### 5.2 Needs an image in — unusable until the request carries one
+### 5.2 Needs an image in — reachable since 2026-11-17
+
+The request gained `image` on 2026-11-17 (`docs/protocol.md` sections 2, 4.1 and
+6.1), so the files below can be asked for with a picture. **One of them has been
+rendered here:** `background-remove`, one still at 512×512, four steps, seed 7102,
+on a reference the service itself had rendered — the vase came back with its
+background cut, and the same request without the reference produced nothing but a
+checkerboard. **The reference's own cost** on that request, two runs each:
+`render_s` 7.176–7.510 s with a reference against 5.532–5.832 s without one, so
+about **+1.6 s** for the VAE encode and the extra conditioning tokens — the LoRA
+was in both arms and its cost is measured separately (§2). That is one observation
+of one file, and the rest of this table is still the author's claim, exactly as §10
+says. Four of these ten rows want more than a bare picture — `tryon` wants a
+clothing-agnostic body with the outfit region greyed, and
+`outpaint`/`object-remove`/`zoom` want a *marked* image — and nothing here has
+produced such an input, so those four are reachable in the plumbing and unproven in
+practice.
 
 | Alias | What it does | What it expects | Downloads | Size |
 | --- | --- | --- | --- | --- |
@@ -275,10 +300,19 @@ inference LoRA until you read what it is for.
 - **The plateau's cause.** From twelve LoRAs the runtime stops growing in device
   memory and doubles its wall time; that it is moving adapter tensors to system
   memory is a plausible reading, not an observation.
-- **Every "what it does" in §5 and §6 is the author's claim.** "Consistent
-  character", "virtual try-on", "sharper eyes" are what the card says the file
-  does. None has been rendered here, and this project does not repeat a claim as
-  its own until it has seen the still.
-- **Whether the edit half is worth the plumbing.** Seven of klein's tools need an
-  image in, and the request cannot carry one. That is a decision about the service,
-  not a measurement.
+- **Every "what it does" in §5 and §6 is still the author's claim, with one
+  exception.** "Consistent character", "virtual try-on", "sharper eyes" are what
+  the card says the file does, and this project does not repeat a claim as its own
+  until it has seen the still. The exception is `background-remove`, rendered once
+  on 2026-11-17 (below): it cut the background from the reference it was given. One
+  still is one still, and the rest of §5 is untouched.
+- **Whether the edit half is worth the plumbing.** §5.2's ten rows all need an
+  image in. The request carries one since 2026-11-17, so the plumbing question is
+  answered — and only the plumbing. **One still was rendered:** `background-remove`
+  at 512×512, four steps, on a reference the service had rendered itself; the vase
+  came back with its background cut and the same request without the reference
+  produced only a checkerboard. That is one file, one prompt and one seed. Whether
+  the other nine behave as their cards say — and whether a **style** LoRA trained
+  on text-to-image pairs behaves with a reference image or fights the instruction —
+  is unmeasured, and no document may claim it. Evidence:
+  `tests/e2e/image-input/evidence/`.

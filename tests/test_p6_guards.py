@@ -18,10 +18,10 @@ half of guard 4), and writes a synthetic entry for a stub adapter, loads it and
 renders it in a child process (guard 14). It costs seconds.
 
 `ServiceCase` needs the live service, so it owns its lifecycle: one server, started
-once in `setUpClass` and stopped by guard 2's own test. Guards 16, 13 and 17 run
-after it and start servers of their own, because the instance mutex allows one at
-a time (guard 12). Every render the class makes is listed here with the guard
-that owns it:
+once in `setUpClass` and stopped by guard 2's own test. Guards 16, 13, 17, 18 and
+19 run after it and start servers of their own, because the instance mutex allows
+one at a time (guard 12). Every render the class makes is listed here with the
+guard that owns it:
 
     renders                              guard
     4 x 1280x720 POST, same prompt/seed  guard 3 (owns); guard 5 borrows the bytes
@@ -43,8 +43,11 @@ that owns it:
     2 x 256x256 POST, plus 1 server      guard 18 (owns); one with a LoRA, one
                                          without, on the promoted entry whose
                                          catalog declares it
+    3 x 256x256 POST, plus 1 server      guard 19 (owns); one reference still, then
+                                         the same request with it and without it, on
+                                         the promoted entry whose model is an editor
 
-That is nineteen stills. Guard 3 costs four by protocol; guard 9 costs two because
+That is twenty-two stills. Guard 3 costs four by protocol; guard 9 costs two because
 concurrency cannot be borrowed; guard 10 costs one base render; the CLI still
 doubles as guard 7's second half; guard 15 costs four because two step counts
 must each be proved stable and then proved different; guard 13 costs two because
@@ -55,8 +58,11 @@ and there is no flag to point the server at another file, so the two cases are
 two boots. Guard 18 costs two because "the selection reached the runtime" is a
 claim about bytes, and a still cannot be compared with itself: it pays its own
 server too, since the shared one serves Z-Image, whose entry declares no catalog.
-Nothing renders twice for the same guard. Guard 14 writes one more
-still, 256×256, and it is the stub's: no model is loaded for it.
+Guard 19 costs three for the same reason in the other direction — a reference
+cannot be compared with itself — and the reference it edits is rendered by the
+service, because this tree adds no downloaded image. Nothing renders twice for
+the same guard. Guard 14 writes one more still, 256×256, and it is the stub's:
+no model is loaded for it.
 
 Ordering is explicit, not incidental: methods are numbered because unittest runs
 them alphabetically, and guard 3 has to see the first render after `start`.
@@ -703,7 +709,11 @@ class _U1StubAdapter:
         self.seen.append("census")
         return dict(self.entry.expected_census)
 
-    def encode(self, prompt: str, loras: tuple = ()) -> str:
+    def encode(self, prompt: str, loras: tuple = (), images: tuple = ()) -> str:
+        # The signature is the contract's, references included: `render` passes
+        # the resolved tuple to every adapter. This entry declares no reference,
+        # so the tuple is empty and the recorded call is the one it always was.
+        assert images == (), f"this entry declares no reference, and got {len(images)}"
         self.seen.append(f"encode {prompt!r}")
         return prompt
 
@@ -853,7 +863,21 @@ class ContractCase(GuardCase):
         print(f"guard 4b: float8=0 refused ({findings['refusal']})")
 
     def test_guard08_no_import_or_path_outside_the_tree(self) -> None:
-        """Guard 8: refusal of any import or absolute path leaving the project's tree."""
+        """Guard 8: refusal of any import or absolute path leaving the project's tree.
+
+        Two kinds of exemption, and both are declared by name. The kernel's
+        interfaces (`/proc`, `/sys`, `/dev`) are what `bin/coltman-images` reads to
+        tell its own server from a stranger's pid, and they are printed below. The
+        second is the **caller's reference image**: `image` is the one request
+        field whose path may point anywhere, because the file belongs to the
+        caller and the system invents no transport (protocol sections 2, 4.1). A
+        caller-named path is not a literal, so the scan cannot see one — what this
+        half proves is that the permission is a single declaration, named once,
+        covering exactly the field the law admits, instead of a silent pass
+        somewhere in the code.
+        """
+        from coltman_images.entry import CALLER_READ_EXEMPTIONS, VOCABULARY
+
         sources = _python_sources()
         documents = _declaration_documents()
 
@@ -913,6 +937,7 @@ class ContractCase(GuardCase):
                 continue
             paths_outside.append(record["where"] + " → " + literal)
 
+        read_exemptions = dict(CALLER_READ_EXEMPTIONS)
         _put(
             "guard08",
             {
@@ -922,6 +947,7 @@ class ContractCase(GuardCase):
                 "paths_inside": paths_inside,
                 "paths_kernel": paths_kernel,
                 "paths_outside": paths_outside,
+                "caller_read_exemptions": read_exemptions,
             },
         )
         print(
@@ -931,6 +957,21 @@ class ContractCase(GuardCase):
         )
         for finding in paths_kernel:
             print(f"guard 8: exempted kernel interface — {finding}")
+        for field, reason in read_exemptions.items():
+            print(f"guard 8: exempted caller path — {field}: {reason}")
+
+        self.assertEqual(
+            sorted(read_exemptions),
+            ["image"],
+            "the declared read exception is not exactly the request's `image` field: "
+            f"{sorted(read_exemptions)} — a second field reaching outside the tree is an "
+            "undeclared read (protocol section 2)",
+        )
+        self.assertIn(
+            "image",
+            VOCABULARY,
+            "the exemption names a field the closed vocabulary does not have",
+        )
 
         self.assertEqual(
             imports_outside,
@@ -1207,7 +1248,9 @@ class _G15StubAdapter:
     def census(self) -> dict[str, int]:
         return dict(self.entry.expected_census)
 
-    def encode(self, prompt: str, loras: tuple = ()) -> str:
+    def encode(self, prompt: str, loras: tuple = (), images: tuple = ()) -> str:
+        # The contract's signature, references included, even though this guard
+        # never asks for one.
         return prompt
 
     def denoise(self, features, width: int, height: int, seed: int, steps: int):
@@ -1276,11 +1319,15 @@ G13_FORBIDDEN_IMPORTS = (
     "coltman_images.adapters",
     "coltman_images.render",
     "coltman_images.upscale",
+    "PIL",
 )
 """Guard 13: what the UI must never reach. `coltman_images.adapters.*` matches by
 prefix, so an adapter module of the future is covered by the same entry; the
 declared stage is on the list because a page that ran it would be a second
-producer of synthesized pixels, which is the one thing the seam exists to stop."""
+producer of synthesized pixels, which is the one thing the seam exists to stop.
+`PIL` is on it because the reference control hands the page a path: a page that
+opened the file to read its size would be sizing a request from the caller's
+picture instead of from the entry and the aspect (section 5.5)."""
 
 G13_APP_ATTRIBUTES = frozenset({"submit", "depth", "entry", "declaration"})
 """Guard 13: everything the page may read from the warm server it is handed.
@@ -1465,6 +1512,84 @@ def _ui_string_size_literals(tree: ast.AST, forbidden: tuple[int, ...]) -> list[
         if any(str(needle) in text for needle in forbidden)
     }
     return sorted(hits)
+
+
+def _ui_gradio_calls(tree: ast.AST, attribute: str) -> list[dict[str, object]]:
+    """Every `gr.<attribute>(...)` bound to a name, with its literal keywords.
+
+    `attribute` is the gradio class as the page spells it (`Image`). The bound
+    name is what the wiring is made of: a component that is an event's input or
+    output is the one the page uses, and a call nobody wires is decoration. A
+    keyword whose value is not a literal is reported as `<expr>`, which no
+    assertion accepts as a literal type.
+    """
+    found: list[dict[str, object]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        if not isinstance(func, ast.Attribute) or func.attr != attribute:
+            continue
+        target = node.targets[0]
+        found.append(
+            {
+                "bound_to": target.id if isinstance(target, ast.Name) else None,
+                "line": node.lineno,
+                "keywords": {
+                    keyword.arg: (
+                        keyword.value.value
+                        if isinstance(keyword.value, ast.Constant)
+                        else "<expr>"
+                    )
+                    for keyword in node.value.keywords
+                    if keyword.arg
+                },
+            }
+        )
+    return found
+
+
+def _ui_click_wiring(tree: ast.AST) -> tuple[list[str], list[str]]:
+    """The names a `*.click(...)` event takes as inputs, and hands back as outputs."""
+    inputs: list[str] = []
+    outputs: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "click"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg not in ("inputs", "outputs"):
+                continue
+            if not isinstance(keyword.value, ast.List):
+                continue
+            names = [
+                element.id
+                for element in keyword.value.elts
+                if isinstance(element, ast.Name)
+            ]
+            (inputs if keyword.arg == "inputs" else outputs).extend(names)
+    return inputs, outputs
+
+
+def _ui_size_reads(tree: ast.AST, names: set[str]) -> list[str]:
+    """Every `name.size` / `.width` / `.height` / `.shape` read of `names`.
+
+    The reference control hands the page a **path**, and the box is the entry's
+    and the aspect's to decide: a page that opened the file or read a dimension
+    off it would be sizing a request from the caller's picture instead of from
+    the entry (protocol section 5.5).
+    """
+    dimensions = {"size", "width", "height", "shape"}
+    return sorted(
+        f"{node.value.id}.{node.attr}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr in dimensions
+        and isinstance(node.value, ast.Name)
+        and node.value.id in names
+    )
 
 
 def _ui_page(port: int, path: str = "/") -> tuple[int, str, bytes]:
@@ -1678,6 +1803,88 @@ def _g18_restore_host() -> None:
         HOST_FILE.unlink(missing_ok=True)
         return
     HOST_FILE.write_bytes(HOST_DECLARATION)
+
+
+# --- guard 19: a request may carry an image --------------------------------
+#
+# FLUX.2 [klein] is trained for multi-reference editing and the vendored runtime
+# takes `-r, --ref-image` repeatably, so the request gained `image`: a list of
+# paths, the same shape as `out` (protocol section 4.1). The entry declares how
+# many references its model accepts; the adapter carries them, in order, to the
+# runtime. Three halves below — the door's two refusals and one still that proves
+# a reference reached the model — plus the contract checks that need no card.
+
+G19_ID = "flux2-klein-4b-gguf-q4"
+"""The promoted entry's id: the only entry in this tree whose model is an editor."""
+
+G19_DIR = ROOT / "tests" / "e2e" / "image-input" / "evidence"
+"""The stills and the synthetic entries: a run product, inside the repo and
+gitignored by the same rule every other evidence folder follows."""
+
+G19_SIDE = 256
+G19_STEPS = 4
+"""The cheapest still the promoted entry admits: its own 256x256 floor at the
+floor of its step range. The reference is the variable here, the box is not."""
+
+G19_REFERENCE_PROMPT = "a red ceramic vase on a white table, studio light"
+"""The picture the service renders first, and then edits: cheap, and its subject
+is unambiguous in the still, so the eye can tell the reference was read."""
+
+G19_EDIT_PROMPT = "Turn this scene into a real photograph"
+G19_SEED = 1901
+
+G19_STUB = "g19noimages"
+"""A registered adapter that declares no reference capability.
+
+Used only to prove the boot refusal: an entry that declares a count behind an
+adapter that cannot carry one is refused by `load_adapter`, not served with the
+picture dropped (protocol section 6.3).
+"""
+
+
+class _G19NoImageAdapter:
+    """An adapter that carries no reference image and says so, as Z-Image's does."""
+
+    name = G19_STUB
+    supports_loras = False
+    supports_images = False
+
+    def __init__(self, entry) -> None:
+        self.entry = entry
+        self.last_load_s = 0.0
+
+
+def _g19_entry(name: str, *, image_block: bool, image_field: bool) -> pathlib.Path:
+    """A synthetic entry whose reference declaration is spelled by the caller.
+
+    `image_block` and `image_field` are the two halves that must agree: the
+    capability and the request field. An entry with one and not the other is a
+    declaration the system would half-honour, so the loader refuses it.
+    """
+    G19_DIR.mkdir(parents=True, exist_ok=True)
+    asset = G19_DIR / "g19-asset.bin"
+    asset.write_bytes(b"guard 19: a component no adapter here reads\n")
+    fields = ["prompt", "seed", "width", "height", "out"]
+    if image_field:
+        fields.append("image")
+    document: dict[str, object] = {
+        "id": f"g19-{name.replace('.yaml', '').replace('_', '-')}",
+        "adapter": G19_STUB,
+        "checkpoint": str(asset),
+        "components": {"weights": str(asset)},
+        "steps": 4,
+        "guidance": 1.0,
+        "limits": {"max_pixels": G19_SIDE * G19_SIDE, "steps": {"min": 4, "max": 4}},
+        "request_fields": fields,
+        "expected_census": {"parameters": 1},
+        "defaults": {"width": G19_SIDE, "height": G19_SIDE, "format": "png"},
+        "warmup": {"width": G19_SIDE, "height": G19_SIDE, "prompt": "warm up", "seed": 0},
+    }
+    if image_block:
+        document["image"] = {"max": 2}
+    path = G19_DIR / name
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
 
 
 class ServiceCase(GuardCase):
@@ -2749,10 +2956,23 @@ class ServiceCase(GuardCase):
            the model would pass the rest vacuously. The same scan over the Z-Image
            adapter must find what the blacklist forbids, which is what shows the
            scan can find anything at all.
+
+           The reference control is asserted in the same positive direction: the
+           page must build exactly one `gr.Image` that is an event **input** and
+           hand `type="filepath"` to the seam (the request carries a path), the
+           still must still be the one image component wired as an output, and no
+           dimension may be read off the control — `size`, `width`, `height` or
+           `shape` — because the box is the entry's and the aspect's to decide.
+           An imaging library is on the forbidden-import list for the same reason,
+           and the control's absence would make every "carries no size" assertion
+           pass vacuously, which is the hole this half closes.
         2. **Unit.** `request_from_form` maps the switch: SD is the entry's own
            defaults with no permission, HD is a size above that entry's ceiling
            and inside what the stage can serve — asserted as a property, on an
-           entry whose defaults do **not** sit at its ceiling.
+           entry whose defaults do **not** sit at its ceiling. It also carries the
+           reference: a file becomes a one-item `image` list, an empty control
+           sends no field at all, and the box is identical either way — so the
+           page's picture can never move the size the entry and the aspect set.
         3. **Behavioural.** The server is started with `--ui`, the page answers
            HTML on its own port, and two submissions fired **through the page**
            (gradio's own client, the same endpoint the button calls) serialise by
@@ -2800,6 +3020,25 @@ class ServiceCase(GuardCase):
         size_numbers = _ui_matching(numbers, G13_FORBIDDEN_SIZE_CONSTANTS)
         size_strings = _ui_string_size_literals(tree, G13_FORBIDDEN_SIZE_CONSTANTS)
 
+        # The reference control: an `Image` the page feeds a file *into*, wired as
+        # an event input, and the still it hands back is the one wired as an
+        # output. The input is what the request's `image` field is made of, and
+        # the check is positive — a component that exists and reaches the seam —
+        # because "the page carries no size" passes vacuously on a page with no
+        # control at all.
+        image_calls = _ui_gradio_calls(tree, "Image")
+        click_inputs, click_outputs = _ui_click_wiring(tree)
+        reference_controls = [
+            call for call in image_calls if call["bound_to"] in click_inputs
+        ]
+        still_controls = [
+            call for call in image_calls if call["bound_to"] in click_outputs
+        ]
+        reference_names = {
+            str(call["bound_to"]) for call in reference_controls if call["bound_to"]
+        }
+        reference_size_reads = _ui_size_reads(tree, reference_names)
+
         # 2. Unit — the switch, on a synthetic entry and on the real declaration.
         from coltman_images import ui as ui_module
 
@@ -2816,6 +3055,7 @@ class ServiceCase(GuardCase):
             steps=10,
             steps_min=4,
             steps_max=13,
+            images_max=10,
         )
         factor = 2
         stub_prompt = "a thing that is not a lighthouse"
@@ -2831,6 +3071,13 @@ class ServiceCase(GuardCase):
         )
         stub_steps = ui_module.request_from_form(
             stub_prompt, 11, False, stub.steps_min, stub_aspect, stub, factor
+        )
+        stub_reference = "/nowhere/stub-reference.png"
+        stub_with_reference = ui_module.request_from_form(
+            stub_prompt, 11, False, stub.steps, stub_aspect, stub, factor, stub_reference
+        )
+        stub_empty_reference = ui_module.request_from_form(
+            stub_prompt, 11, False, stub.steps, stub_aspect, stub, factor, None
         )
 
         # The real numbers, read as a declaration rather than resolved: a full
@@ -2948,6 +3195,11 @@ class ServiceCase(GuardCase):
                     "numbers": numbers,
                     "size_numbers": size_numbers,
                     "size_strings": size_strings,
+                    "image_components": image_calls,
+                    "click_inputs": click_inputs,
+                    "click_outputs": click_outputs,
+                    "reference_controls": reference_controls,
+                    "reference_size_reads": reference_size_reads,
                     "control_file": str(adapter_source.relative_to(ROOT)),
                     "control_forbidden": adapter_forbidden,
                 },
@@ -2957,8 +3209,12 @@ class ServiceCase(GuardCase):
                         "hd": stub_hd,
                         "absent_seed": stub_absent_seed,
                         "steps": stub_steps,
+                        "with_reference": stub_with_reference,
+                        "empty_reference": stub_empty_reference,
+                        "reference": stub_reference,
                         "factor": factor,
                         "ladder": [stub.steps_min, stub.steps_max, stub.steps],
+                        "images_max": stub.images_max,
                     },
                     "shapes": {
                         "presets": list(ui_module.ASPECT_PRESETS),
@@ -2992,6 +3248,11 @@ class ServiceCase(GuardCase):
             f"{len(size_numbers)} entry sizes and {len(size_strings)} size strings written in code"
         )
         print(f"guard 13: every numeric literal in {ui_source.name}: {numbers}")
+        print(
+            f"guard 13: {len(image_calls)} gr.Image components — "
+            f"{[(call['bound_to'], call['keywords'].get('type')) for call in image_calls]}; "
+            f"inputs {click_inputs}; outputs {click_outputs}"
+        )
         print(
             f"guard 13: the same scan finds {len(adapter_forbidden)} forbidden imports in "
             f"{adapter_source.name} — {adapter_forbidden}"
@@ -3059,6 +3320,42 @@ class ServiceCase(GuardCase):
                 f"{ui_source.name} writes the entry's sizes into a string: {size_strings}",
             )
 
+        with self.subTest(part="13a: the reference control exists and reaches the seam"):
+            # Positive direction: the page must *have* the control, wired as an
+            # event input, and it must hand the seam a path. A page with no
+            # control passes every "carries no size" assertion vacuously, which is
+            # exactly the hole this closes.
+            self.assertEqual(
+                len(reference_controls),
+                1,
+                "the page has no single image control wired into the form as an input: "
+                f"{[(call['bound_to'], call['keywords']) for call in image_calls]} — "
+                f"the event's inputs are {click_inputs}",
+            )
+            self.assertEqual(
+                reference_controls[0]["keywords"].get("type"),
+                "filepath",
+                "the reference control does not hand the page a path — the request carries a "
+                f"path, so the component must be `type='filepath'`: {reference_controls[0]}",
+            )
+            self.assertEqual(
+                len(still_controls),
+                1,
+                "the scan finds no image component among the event's outputs, so it cannot be "
+                f"trusted to find the input either: {image_calls}",
+            )
+            self.assertEqual(
+                still_controls[0]["keywords"].get("type"),
+                "filepath",
+                f"the still's component changed type: {still_controls[0]}",
+            )
+            self.assertEqual(
+                reference_size_reads,
+                [],
+                "the page reads a dimension off the reference control: "
+                f"{reference_size_reads} — the box is the entry's and the aspect's to decide",
+            )
+
         with self.subTest(part="13a: the ladder comes from the entry"):
             missing = sorted({"steps_min", "steps_max", "steps"} - entry_attributes)
             self.assertEqual(
@@ -3103,6 +3400,29 @@ class ServiceCase(GuardCase):
             )
             self.assertEqual(stub_steps.get("steps"), stub.steps_min, "a moved slider did not reach the request")
             self.assertEqual(real_low.get("steps"), real.steps_min, "a moved slider did not reach the request")
+
+            # The reference. A file on the control rides to the request as a
+            # one-item `image` list, and an empty control sends **no field at
+            # all** — so the page at rest is the request the API serves with no
+            # reference. The box does not move either way: the page never reads a
+            # dimension off the file (section 5.5).
+            self.assertEqual(
+                stub_with_reference.get("image"),
+                [stub_reference],
+                f"a file on the control did not reach the request: {stub_with_reference}",
+            )
+            self.assertNotIn(
+                "image",
+                stub_empty_reference,
+                f"an empty control wrote an image field into the request: {stub_empty_reference}",
+            )
+            self.assertNotIn("image", stub_sd, f"the form's request grew an image field: {stub_sd}")
+            self.assertEqual(
+                (stub_with_reference.get("width"), stub_with_reference.get("height")),
+                (stub_sd["width"], stub_sd["height"]),
+                "the reference control changed the requested box: the size is the entry's and the "
+                "aspect's to decide, not the picture's",
+            )
 
             naive = (stub.defaults["width"] * factor, stub.defaults["height"] * factor)
             self.assertLessEqual(
@@ -3287,6 +3607,11 @@ class ServiceCase(GuardCase):
             updates = 0
             job = client.submit(
                 "a brass compass on a wooden table",
+                # The reference control is the second input. Z-Image's entry
+                # declares no reference capability, so the page hides the control
+                # and this submission carries none — the request is exactly the
+                # one it sent before the control existed.
+                None,
                 seeds[label],
                 "SD",
                 steps[label],
@@ -3358,6 +3683,12 @@ class ServiceCase(GuardCase):
                 f"submission {label}'s page panel does not state what was delivered: {result['panel'][:200]!r}",
             )
             self.assertIn("census —", result["panel"], f"submission {label} showed no census")
+            self.assertNotIn(
+                "reference —",
+                result["panel"],
+                f"submission {label} carries no reference and its panel claims one: "
+                f"{result['panel'][:200]!r}",
+            )
             self.assertIn(
                 f"steps {steps[label]}",
                 result["panel"],
@@ -4065,6 +4396,309 @@ class ServiceCase(GuardCase):
                 "live": live,
             },
         )
+
+    # --- 17: guard 19 owns the reference image, and it runs last -----------
+
+    def test_0990_guard19_image_input(self) -> None:
+        """Guard 19: a request may carry a reference image, and the model sees it.
+
+        Three halves, and the third is the one that matters because the first two
+        could both hold while every reference was silently dropped:
+
+        1. **A path that is not there is refused, naming it.** The door stats the
+           file before any adapter is built, so a typo is a sentence about the
+           file and not a render that failed inside the child — `sd-cli` exits 1
+           on a reference it cannot read, and that exit arrives long after a
+           model was loaded.
+        2. **A count above the entry's is refused, with both numbers.** The count
+           is the model's declared capability (`image: {max: N}`), so the refusal
+           quotes the request's count and the entry's, the same way the step range
+           quotes its bounds. The field itself belongs to the entry: Z-Image
+           declares no reference block and its refusal says so, and an entry that
+           declares one behind an adapter that cannot carry it is refused at boot.
+        3. **A request with one reference is served, and its still differs from
+           the same prompt without it.** 256x256 at the entry's four-step floor,
+           rendered twice at one seed with one reference between them: different
+           bytes is the only proof the file reached the runtime instead of
+           stopping at the request parser, and the response echoes the path so a
+           caller can read back what conditioned its still.
+
+        It runs after guard 18 and pays its own boot: the shared fixture serves
+        Z-Image, whose entry declares no reference at all — the per-model rule
+        this guard states.
+        """
+        from coltman_images import adapter as adapter_module
+        from coltman_images.adapters.flux2klein_sd import _command
+        from coltman_images.entry import EntryError, load_entry
+
+        G19_DIR.mkdir(parents=True, exist_ok=True)
+        adapter_module._REGISTRY[G19_STUB] = f"{__name__}:_G19NoImageAdapter"
+        self.addCleanup(adapter_module._REGISTRY.pop, G19_STUB, None)
+
+        entry = load_entry(G18_ENTRY)
+        self.assertEqual(entry.id, G18_ID, "the promoted entry changed")
+        self.assertEqual(entry.images_max, 10, "the entry's declared reference count changed")
+        self.assertIn("image", entry.request_fields, "the entry does not accept the image field")
+
+        # 1. A path that does not exist, at the door, naming it.
+        absent = G19_DIR / "g19-never-rendered.png"
+        absent.unlink(missing_ok=True)
+        missing_refusal = " ".join(entry.accepts({"prompt": "x", "image": [str(absent)]}))
+        self.assertIn(str(absent), missing_refusal, f"the refusal does not name the file: {missing_refusal}")
+        self.assertIn("does not exist", missing_refusal, f"{missing_refusal}")
+
+        # A relative path is refused the same way `out` is: the caller names the
+        # file, and the system invents no transport.
+        relative_refusal = " ".join(entry.accepts({"prompt": "x", "image": ["g19-relative.png"]}))
+        self.assertIn("absolute", relative_refusal, f"{relative_refusal}")
+
+        # 2. The count, with both numbers.
+        reference = G19_DIR / "g19-reference-256.png"
+        over = [str(reference)] * (entry.images_max + 1)
+        count_refusal = " ".join(entry.accepts({"prompt": "x", "image": over}))
+        self.assertIn(str(len(over)), count_refusal, f"the refusal does not name the count: {count_refusal}")
+        self.assertIn(
+            f"at most {entry.images_max}", count_refusal, f"the refusal does not name the cap: {count_refusal}"
+        )
+
+        # The field is the entry's: a model with no reference block says so.
+        zimage = load_entry(ZIMAGE_ENTRY)
+        self.assertEqual(zimage.images_max, 0, "Z-Image's entry declares references")
+        zimage_refusal = " ".join(zimage.accepts({"prompt": "x", "image": [str(reference)]}))
+        self.assertIn("accepts no reference image", zimage_refusal, f"{zimage_refusal}")
+
+        # Both halves of the declaration must agree, or the system would honour
+        # half of it: a capability nobody can name, or a field with no capability.
+        with self.assertRaises(EntryError) as block_without_field:
+            load_entry(_g19_entry("g19-block-only.yaml", image_block=True, image_field=False))
+        self.assertIn("request_fields do not carry 'image'", str(block_without_field.exception))
+        with self.assertRaises(EntryError) as field_without_block:
+            load_entry(_g19_entry("g19-field-only.yaml", image_block=False, image_field=True))
+        self.assertIn("declares no image block", str(field_without_block.exception))
+
+        # A declaration the runtime cannot honour is refused at boot, not served
+        # with the picture dropped (protocol section 6.3).
+        declaring = load_entry(_g19_entry("g19-declaring.yaml", image_block=True, image_field=True))
+        self.assertEqual(declaring.images_max, 2, "the synthetic entry did not declare its count")
+        with self.assertRaises(adapter_module.AdapterError) as cannot_carry:
+            adapter_module.load_adapter(declaring)
+        boot_refusal = str(cannot_carry.exception)
+        self.assertIn("reference image", boot_refusal, f"{boot_refusal}")
+        self.assertIn(G19_STUB, boot_refusal, f"the refusal does not name the adapter: {boot_refusal}")
+
+        # The command line: `-r` once per image, in the order the caller named
+        # them, and none at all for a request that carries no reference.
+        sample = G19_DIR / "g19-child.png"
+        first = G19_DIR / "g19-first.png"
+        second = G19_DIR / "g19-second.png"
+        plain_command = _command(entry, "x", G19_SIDE, G19_SIDE, 7, G19_STEPS, sample, True)
+        one_command = _command(
+            entry, "x", G19_SIDE, G19_SIDE, 7, G19_STEPS, sample, True, (), (first,)
+        )
+        two_command = _command(
+            entry, "x", G19_SIDE, G19_SIDE, 7, G19_STEPS, sample, True, (), (first, second)
+        )
+        self.assertNotIn(
+            "-r", plain_command, f"a request with no reference gained -r: {plain_command}"
+        )
+        self.assertEqual(
+            [one_command[index + 1] for index, token in enumerate(one_command) if token == "-r"],
+            [str(first)],
+            f"one reference did not produce exactly one -r: {one_command}",
+        )
+        self.assertEqual(
+            [two_command[index + 1] for index, token in enumerate(two_command) if token == "-r"],
+            [str(first), str(second)],
+            f"two references did not keep their order: {two_command}",
+        )
+
+        # 3. Through the service. One instance per card, as guards 13, 16, 17 and
+        #    18 do under `-k guard19`.
+        if _state() is not None or _server_pids():
+            cleared = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and (_state() is not None or _server_pids()):
+                time.sleep(0.5)
+            self.assertEqual(_server_pids(), [], f"the shared server would not stop: {cleared.stderr}")
+            self.assertIsNone(_state(), "the shared server left its state file behind")
+
+        def _stop_server() -> None:
+            stopped = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                if not STATE_FILE.exists() and not _server_pids() and _health()[0] != 200:
+                    return
+                time.sleep(0.5)
+            self.fail(f"the server would not stop: {stopped.stderr}")
+
+        live: dict[str, object] = {}
+        try:
+            started = _cli("start", "--model", G19_ID, timeout=600)
+            print(f"guard 19: start --model {G19_ID} → exit {started.returncode}")
+            self.assertEqual(started.returncode, 0, f"start failed: {started.stderr}")
+            status, health = _health()
+            self.assertEqual(status, 200, f"/health did not answer: {health}")
+
+            # 1b. The missing file, at a live door, with the worker untouched.
+            counters_before = (_render_count(), _render_failure_count())
+            missing_status, missing_body = _generate({"prompt": "x", "image": [str(absent)]})
+            counters_after = (_render_count(), _render_failure_count())
+            live["missing"] = {"status": missing_status, "body": missing_body}
+            live["missing_counters"] = {"before": counters_before, "after": counters_after}
+            self.assertEqual(missing_status, 400, f"a missing reference was not refused: {missing_body}")
+            missing_said = str(missing_body.get("error", {}).get("message", ""))
+            self.assertIn(str(absent), missing_said, f"the refusal does not name the file: {missing_said}")
+            self.assertEqual(
+                counters_after, counters_before, "a refused image request reached the worker"
+            )
+            print(f"guard 19: a missing reference → 400 {missing_said[:80]}…")
+
+            # 2b. The count, at a live door.
+            counters_before = (_render_count(), _render_failure_count())
+            count_status, count_body = _generate({"prompt": "x", "image": over})
+            counters_after = (_render_count(), _render_failure_count())
+            live["count"] = {"status": count_status, "body": count_body}
+            live["count_counters"] = {"before": counters_before, "after": counters_after}
+            self.assertEqual(count_status, 400, f"a request above the count was served: {count_body}")
+            count_said = str(count_body.get("error", {}).get("message", ""))
+            self.assertIn(str(len(over)), count_said, f"{count_said}")
+            self.assertIn(f"at most {entry.images_max}", count_said, f"{count_said}")
+            self.assertEqual(counters_after, counters_before, "a refused image request reached the worker")
+            print(f"guard 19: {len(over)} references → 400 …{count_said[:110]}…")
+
+            # 1c. The same field through the CLI: `--image` reaches the request,
+            #     and the command adds no rule of its own — the door's sentence
+            #     arrives as exit 2 with nothing on stdout.
+            cli = _cli("generate", "--prompt", "x", "--image", str(absent), timeout=120)
+            live["cli_missing"] = {
+                "exit": cli.returncode,
+                "stdout": cli.stdout,
+                "stderr": cli.stderr,
+                "counters": [_render_count(), _render_failure_count()],
+            }
+            self.assertEqual(cli.returncode, 2, f"the CLI did not map the refusal: {cli.stderr}")
+            self.assertIn(str(absent), cli.stderr, f"the CLI's refusal does not name the file: {cli.stderr}")
+            self.assertEqual(cli.stdout, "", f"a refusal wrote to stdout: {cli.stdout!r}")
+            self.assertEqual(
+                live["cli_missing"]["counters"],
+                list(counters_before),
+                "a refused CLI image request reached the worker",
+            )
+            print(f"guard 19: the CLI's --image on a missing file → exit {cli.returncode}")
+
+            # 3b. The reference still, then the same request twice: once carrying
+            #     the reference and once without it. The reference is rendered by
+            #     the service itself — this tree adds no downloaded image.
+            reference.unlink(missing_ok=True)
+            reference_status, reference_body = _generate(
+                {
+                    "prompt": G19_REFERENCE_PROMPT,
+                    "seed": G19_SEED,
+                    "width": G19_SIDE,
+                    "height": G19_SIDE,
+                    "steps": G19_STEPS,
+                    "out": str(reference),
+                }
+            )
+            live["reference_render"] = {"status": reference_status, "body": reference_body}
+            self.assertEqual(reference_status, 200, f"the reference still failed: {reference_body}")
+            self.assertTrue(reference.is_file(), f"{reference} was not written")
+            self.assertEqual(_png_size(reference), (G19_SIDE, G19_SIDE))
+
+            with_reference = G19_DIR / "g19-with-reference.png"
+            without_reference = G19_DIR / "g19-without-reference.png"
+            for path in (with_reference, without_reference):
+                path.unlink(missing_ok=True)
+            refs_before = _log_count("refs=1")
+            carried_status, carried_body = _generate(
+                {
+                    "prompt": G19_EDIT_PROMPT,
+                    "seed": G19_SEED + 1,
+                    "width": G19_SIDE,
+                    "height": G19_SIDE,
+                    "steps": G19_STEPS,
+                    "image": [str(reference)],
+                    "out": str(with_reference),
+                }
+            )
+            refs_after = _log_count("refs=1")
+            plain_status, plain_body = _generate(
+                {
+                    "prompt": G19_EDIT_PROMPT,
+                    "seed": G19_SEED + 1,
+                    "width": G19_SIDE,
+                    "height": G19_SIDE,
+                    "steps": G19_STEPS,
+                    "out": str(without_reference),
+                }
+            )
+            live["carried"] = {"status": carried_status, "body": carried_body, "out": str(with_reference)}
+            live["plain"] = {"status": plain_status, "body": plain_body, "out": str(without_reference)}
+            self.assertEqual(carried_status, 200, f"a request with a reference failed: {carried_body}")
+            self.assertEqual(plain_status, 200, f"the comparison render failed: {plain_body}")
+            self.assertTrue(with_reference.is_file(), f"{with_reference} was not written")
+            self.assertEqual(_png_size(with_reference), (G19_SIDE, G19_SIDE))
+            self.assertEqual(
+                carried_body.get("image"),
+                [str(reference)],
+                f"the response does not echo the reference it used: {carried_body.get('image')}",
+            )
+            self.assertEqual(
+                plain_body.get("image"),
+                [],
+                f"a request with no reference echoed one: {plain_body.get('image')}",
+            )
+            self.assertGreater(float(carried_body.get("render_s", 0.0)), 0.0, "the still reports no render_s")
+            self.assertGreaterEqual(
+                refs_after - refs_before,
+                1,
+                "the child's log records no reference: the tuple never reached the command line",
+            )
+            carried_digest = _sha256(with_reference)
+            plain_digest = _sha256(without_reference)
+            live["digests"] = {"with": carried_digest, "without": plain_digest}
+            print(
+                f"guard 19: one reference at {G19_SIDE}x{G19_SIDE} → 200 in "
+                f"{carried_body.get('render_s')} s; sha256 {carried_digest[:16]}… against "
+                f"{plain_digest[:16]}… without it"
+            )
+            self.assertNotEqual(
+                carried_digest,
+                plain_digest,
+                "the same request with and without a reference produced the same bytes: the file "
+                "never reached the model",
+            )
+            _stop_server()
+        finally:
+            if _state() is not None or _server_pids():
+                _stop_server()
+
+        _put(
+            "guard19",
+            {
+                "entry": {
+                    "id": entry.id,
+                    "images_max": entry.images_max,
+                    "field": "image" in entry.request_fields,
+                },
+                "missing": missing_refusal,
+                "relative": relative_refusal,
+                "count": count_refusal,
+                "zimage": zimage_refusal,
+                "declaration": {
+                    "block_without_field": str(block_without_field.exception),
+                    "field_without_block": str(field_without_block.exception),
+                },
+                "boot_refusal": boot_refusal,
+                "command": {
+                    "no_reference": plain_command,
+                    "one_reference": one_command,
+                    "two_references": two_command,
+                },
+                "live": live,
+            },
+        )
+
 
 
 # --- the fixture's raw steps -----------------------------------------------

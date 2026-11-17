@@ -24,6 +24,13 @@ alias, never a path (section 4.1). What an alias is *applied* by, and in which
 syntax, is the adapter's business (section 6.3); this module resolves aliases to
 declared files and their weights, and knows no tag.
 
+`image` is the entry's **reference capability**: how many images the model accepts
+in, declared as `{max: N}` (sections 4.1 and 6.1). Absent, the entry accepts no
+reference image and a request that carries one is refused by name. The field a
+request carries is a list of absolute paths, the same shape as `out`; the one read
+this system performs outside its own tree is declared in `CALLER_READ_EXEMPTIONS`
+and printed by guard 8 beside the kernel exemption (section 2).
+
 Asset paths are relative to the project root; an absolute path is allowed only
 when the asset lives outside the tree (protocol section 6.1) — except a LoRA,
 which lives inside the tree by declaration (section 6.1).
@@ -59,7 +66,29 @@ model's folder, never shared by path (section 6.1).
 
 # The closed request vocabulary (protocol section 4.1). An entry declares the
 # subset it accepts; nothing outside this tuple is ever a valid field.
-VOCABULARY = ("prompt", "seed", "width", "height", "out", "steps", "upscale", "lora")
+VOCABULARY = ("prompt", "seed", "width", "height", "out", "steps", "upscale", "lora", "image")
+
+CALLER_READ_EXEMPTIONS = {
+    "image": (
+        "a reference image is the caller's own file, named by path, and it may live "
+        "outside this tree — the declared read exception that mirrors `out`'s write "
+        "exception (protocol section 2). A path that arrives through the page is not "
+        "this exception: gradio copies the upload into `run/ui/`, inside the tree"
+    ),
+}
+"""The one thing a request may name that the system reads from outside its tree.
+
+Section 2 says the system reads exactly one thing, its own tree, and names the
+kernel's interfaces as the only exception that reaches outside. A request that
+carries a reference image names a file the caller owns, and the caller may keep it
+anywhere, so the read is a **declared exception** and not a silent pass: it is
+declared here, by field name, and guard 8 prints it beside the kernel exemption it
+already grants. `out` is the mirror image — a declared *write* exception — and it
+is not in this mapping, because a write is not a read.
+
+The page's path is not an exception at all: gradio copies the upload into its file
+cache, which the server points at `run/ui/` inside the tree, so nothing leaves it.
+"""
 
 LORA_BUDGET_MIB = 3443
 """The device-memory budget a request's LoRAs may fill when no host declares one.
@@ -83,9 +112,10 @@ vocabulary needs it when no host is present; the host reads it as its default.
 MIB = 1 << 20
 """Bytes in a mebibyte, the unit the budget is declared in."""
 
-# The envelope every entry carries. `digests` and `loras` are the two optional
-# fields: an entry pins the components it wants pinned, and declares a catalog
-# only when its model may be asked for LoRAs.
+# The envelope every entry carries. `digests`, `loras` and `image` are the
+# optional fields: an entry pins the components it wants pinned, declares a
+# catalog only when its model may be asked for LoRAs, and declares a reference
+# block only when its model accepts images in.
 _TOP_FIELDS = {
     "id",
     "adapter",
@@ -99,11 +129,14 @@ _TOP_FIELDS = {
     "defaults",
     "warmup",
 }
-_OPTIONAL_TOP_FIELDS = frozenset({"digests", "loras"})
+_OPTIONAL_TOP_FIELDS = frozenset({"digests", "loras", "image"})
 _DEFAULT_FIELDS = {"width", "height", "format"}
 _LIMIT_FIELDS = {"max_pixels", "steps"}
 _STEP_LIMIT_FIELDS = {"min", "max"}
 _WARMUP_FIELDS = {"width", "height", "prompt", "seed"}
+_IMAGE_FIELDS = {"max"}
+"""`image`: how many reference images the model accepts. One field, and the law's
+fields stay closed: a model's capability is declared here, not inferred (section 6.1)."""
 _LORA_FIELDS = {"path"}
 _OPTIONAL_LORA_FIELDS = frozenset({"weight"})
 _LORA_HIGH_NOISE_PREFIX = "|high_noise|"
@@ -321,6 +354,14 @@ class Entry:
     defaults: dict[str, Any] = field(default_factory=dict)
     warmup: dict[str, Any] = field(default_factory=dict)
     loras: Mapping[str, Lora] = field(default_factory=dict)
+    images_max: int = 0
+    """How many reference images this model accepts; 0 means it accepts none.
+
+    The capability is the entry's to declare (protocol sections 6.1 and 6.3): the
+    adapter is what carries a reference to its runtime, and `load_adapter` refuses
+    an entry that declares a count behind an adapter that cannot carry one, so a
+    capability the system would ignore never becomes a request field.
+    """
     source: pathlib.Path = DEFAULT_ENTRY
 
     def accepts(self, request: dict[str, Any], limits: Any | None = None) -> list[str]:
@@ -344,8 +385,19 @@ class Entry:
 
         problems: list[str] = []
         for key in sorted(request):
-            if key not in self.request_fields:
-                problems.append(f"{key}: not accepted by this entry")
+            if key in self.request_fields:
+                continue
+            if key == "image":
+                # A field the model does not accept is refused by name, and this
+                # one says why in the model's own terms: no reference capability
+                # is declared, so there is nothing to send a picture to.
+                problems.append(
+                    "image: this entry accepts no reference image — a model declares how many "
+                    "references it carries, and this one declares none (protocol sections 4.1 "
+                    "and 6.1)"
+                )
+                continue
+            problems.append(f"{key}: not accepted by this entry")
         prompt = request.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             problems.append("prompt: required and non-empty")
@@ -377,6 +429,8 @@ class Entry:
             problems.append("upscale: expected true or false")
         if "lora" in request and "lora" in self.request_fields:
             problems.extend(self._lora_problems(request["lora"], budget_mib, loras_note))
+        if "image" in request and "image" in self.request_fields:
+            problems.extend(self._image_problems(request["image"]))
         width = request.get("width", self.defaults["width"])
         height = request.get("height", self.defaults["height"])
         if (
@@ -399,6 +453,55 @@ class Entry:
             width if width is not None else self.defaults["width"],
             height if height is not None else self.defaults["height"],
         )
+
+    def _image_problems(self, declared: Any) -> list[str]:
+        """The `image` field's failures: the shape, the count, and the files.
+
+        The field carries **paths**, the same shape as `out`: the caller names a
+        file and the system invents no transport (protocol section 4.1). The count
+        is the entry's declaration — how many references *this model* accepts —
+        so a request above it is refused with both numbers, and a path that does
+        not exist is refused naming it, before any adapter is built. Nothing here
+        reads the image: a file that cannot be opened at the door is a file the
+        runtime would fail on later, with a worse sentence.
+
+        An entry whose `request_fields` carry `image` with no count cannot reach
+        this method: the loader refuses that pair, and a count of zero therefore
+        means the field itself was refused before validation got here.
+        """
+        if not isinstance(declared, list):
+            return [
+                f"image: expected a list of absolute paths, got {type(declared).__name__}"
+            ]
+
+        problems: list[str] = []
+        for item in declared:
+            if not isinstance(item, str) or not item:
+                problems.append(f"image: expected a non-empty path, got {item!r}")
+                continue
+            if not pathlib.Path(item).is_absolute():
+                problems.append(
+                    f"image: expected an absolute path, got {item!r} — the caller names the file, "
+                    "as `out` does, and the system adds no transport of its own"
+                )
+        if problems:
+            return problems
+
+        if len(declared) > self.images_max:
+            return [
+                f"image: {len(declared)} reference images were given and this entry declares at "
+                f"most {self.images_max} — the count is the model's capability, declared by its "
+                "entry and refused at the door (protocol sections 4.1 and 6.1)"
+            ]
+
+        for item in declared:
+            path = pathlib.Path(item)
+            if not path.is_file():
+                problems.append(
+                    f"image: {item} does not exist — a reference image is a file the caller names, "
+                    "and the door refuses a path it cannot serve (protocol section 4.1)"
+                )
+        return problems
 
     def _lora_problems(self, declared: Any, budget_mib: int, note: str) -> list[str]:
         """The `lora` field's failures: aliases, weights, repetition, and the budget.
@@ -479,6 +582,15 @@ class Entry:
             )
         return tuple(selected)
 
+    def resolve_images(self, request: dict[str, Any]) -> tuple[pathlib.Path, ...]:
+        """The reference files a request names, in the order it named them.
+
+        Call it after `accepts`: every item is then a string, absolute, and a file
+        that exists. The order is the caller's and it is preserved all the way to
+        the runtime, because a reference's index is what the model conditions on.
+        """
+        return tuple(pathlib.Path(item) for item in request.get("image") or ())
+
 
 def _components(declared: Any) -> Components:
     """`components`: free names, each a non-empty path. No name is known here."""
@@ -502,6 +614,21 @@ def _census(declared: Any) -> dict[str, int]:
             raise _refuse(f"expected_census.{key}: expected a non-negative integer")
         census[key] = int(value)
     return census
+
+
+def _image_block(declared: Any) -> int:
+    """`image`: `{max: N}` — how many reference images this model accepts.
+
+    One field, and the law's set stays closed. The count is the entry's because a
+    capability is a property of the model: this tree serves a model that documents
+    up to ten references, and the number is a declaration the door enforces, not a
+    limit the core invents (protocol sections 4.1 and 6.1).
+    """
+    _exact_keys("image", declared, _IMAGE_FIELDS)
+    maximum = declared["max"]
+    if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum <= 0:
+        raise _refuse(f"image.max: expected a positive integer, got {maximum!r}")
+    return int(maximum)
 
 
 def _step_limits(declared: Any) -> tuple[int, int]:
@@ -666,6 +793,20 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
     # so a missing or borrowed LoRA refuses the boot instead of disappearing from
     # a still later (protocol sections 3 and 6.1).
     loras = _lora_catalog(raw["loras"], entry_id) if "loras" in raw else {}
+    # A reference capability is the entry's declaration, and the two halves must
+    # agree: a field nobody can use and a capability nobody can name are both
+    # declarations the system would silently half-honour (section 6.1).
+    images_max = _image_block(raw["image"]) if "image" in raw else 0
+    if images_max and "image" not in fields:
+        raise _refuse(
+            f"image: this entry declares that it accepts {images_max} reference image(s) and its "
+            "request_fields do not carry 'image' — a declared capability no request can use"
+        )
+    if "image" in fields and not images_max:
+        raise _refuse(
+            "request_fields: 'image' is accepted and this entry declares no image block — the "
+            "count is the model's capability and the entry must declare it (protocol section 6.1)"
+        )
 
     return Entry(
         id=entry_id,
@@ -682,5 +823,6 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
         defaults=dict(raw["defaults"]),
         warmup=dict(raw["warmup"]),
         loras=types.MappingProxyType(loras),
+        images_max=images_max,
         source=source,
     )

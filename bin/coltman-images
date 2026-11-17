@@ -620,6 +620,13 @@ def cmd_generate(args: argparse.Namespace) -> int:
         # outside (0, 1] and a count above the deployment's cap — the CLI carries
         # the strings and adds no rule of its own (section 5.1).
         payload["lora"] = list(args.lora)
+    if args.image:
+        # The request's `image` field, the same shape as `out`: the caller names
+        # a path and the command makes it absolute before it crosses into the
+        # server process, exactly as `--out` does (section 4.1). Whether the file
+        # exists, and whether the entry accepts this many, is the door's to
+        # refuse — a client-side rule here would be a second, drifting copy.
+        payload["image"] = [str(pathlib.Path(item).expanduser().resolve()) for item in args.image]
 
     # No client-side deadline: the protocol declares no per-request ceiling
     # (section 6), so inventing one here would refuse work the server accepts.
@@ -726,6 +733,17 @@ def build_parser() -> argparse.ArgumentParser:
             "a LoRA the served entry declares, applied to this still; repeatable. Absent: no "
             "LoRA. The weight is a number in (0, 1] and defaults to the entry's own. An alias "
             "the entry does not declare, and a count above the deployment's cap, are refused"
+        ),
+    )
+    generate.add_argument(
+        "--image",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help=(
+            "a reference image to condition this still on; repeatable, up to what the served "
+            "entry declares. A path that does not exist, and a count above the entry's, are "
+            "refused by the server. Absent: the render is conditioned on the prompt alone"
         ),
     )
     generate.add_argument("--json", action="store_true", help="print the whole response object")

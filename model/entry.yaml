@@ -66,6 +66,19 @@ request_fields:
   - steps
   - upscale
   - lora
+  - image
+
+# Reference images: this model is an editor as well as a text-to-image model.
+# FLUX.2 [klein] documents up to ten references, and the runtime that runs it
+# exposes `-r, --ref-image` repeatably, so the entry declares the count and the
+# door enforces it (protocol sections 4.1, 6.1 and 6.3). `max` is the model's
+# capability and nothing else: a request naming a path that does not exist, or
+# more references than this, is refused before any adapter is built. An entry
+# without this block accepts no reference at all, which is why Z-Image's has none
+# — and a reference block behind an adapter that cannot carry one refuses the
+# boot instead of dropping the picture.
+image:
+  max: 10
 
 # The LoRA catalog: what this model may be asked for, under aliases this entry
 # owns (protocol section 6.1). A request names an alias — `--lora pixel-art:0.5`

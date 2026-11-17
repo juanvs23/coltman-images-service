@@ -137,6 +137,16 @@ class ZImageAdapter:
     receives a selection.
     """
 
+    supports_images = False
+    """This adapter carries no reference image, and says so.
+
+    Z-Image's pipeline here is text-to-image — it is built from a prompt and
+    seeded noise, and nothing in this adapter's path takes a picture in. An entry
+    that declares a reference block and names this adapter is refused by
+    `load_adapter` at boot, so a request never reaches a still that quietly
+    ignored the picture it carried (protocol sections 6.1 and 6.3).
+    """
+
     def __init__(self, entry: Entry) -> None:
         self.entry = entry
         self.last_load_s = 0.0
@@ -178,7 +188,7 @@ class ZImageAdapter:
         """The census this adapter last measured."""
         return dict(self._census)
 
-    def encode(self, prompt: str, loras: tuple = ()) -> list[torch.Tensor]:
+    def encode(self, prompt: str, loras: tuple = (), images: tuple = ()) -> list[torch.Tensor]:
         """Run the text encoder once and return the caption features.
 
         The encoder is built, used and dropped here so it never shares the card
@@ -188,7 +198,16 @@ class ZImageAdapter:
         `loras` carries nothing for this adapter: it applies none, and an entry
         that declared a catalog behind it would have been refused by
         `load_adapter` before this could be called (protocol section 6.3).
+        `images` is refused for the same reason and in the louder direction: this
+        path takes no picture in, so reaching here with one means a declaration
+        and a runtime disagree, and a still that ignored the picture is worse
+        than an error.
         """
+        if images:
+            raise ZImageAdapterError(
+                f"image: the zimage adapter takes no reference image, and {len(images)} arrived — "
+                "an entry that declares one is refused by `load_adapter` at boot"
+            )
         self._load_started = time.perf_counter()
         encoder = _load_text_encoder(self.entry, DEVICE)
         # The pipeline owns the chat template; it is not re-implemented here.

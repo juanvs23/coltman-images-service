@@ -196,6 +196,37 @@ costs **+313 MiB of device memory and +1.5 s**, linear to eleven selections, and
 from twelve the memory plateaus at ~7.6 GB while the wall time doubles. A request
 with no `lora` field is rendered exactly as it was before the feature existed.
 
+### A reference image
+
+FLUX.2 [klein] is an editor as well as a text-to-image model: give it a picture
+and a prompt that says what to do with the picture. The request field is `image`,
+a list of absolute paths, and the served entry declares how many its model
+accepts — **10 on the promoted entry**, none on Z-Image's, whose entry refuses
+the field by name:
+
+```bash
+# a still to edit: the service renders the reference itself
+coltman-images generate --prompt "a red ceramic vase on a white table" \
+  --seed 7101 --width 512 --height 512 --steps 4 --out /abs/path/vase.png
+
+# the edit: the picture goes in, the prompt says what to do with it
+coltman-images generate --prompt "Remove the background from the image" \
+  --lora background-remove --image /abs/path/vase.png \
+  --seed 7102 --width 512 --height 512 --steps 4 --json
+```
+
+`--image PATH` is repeatable and, like `--out`, the path is made absolute for you.
+The door refuses a path that is not a file (naming it) and more references than the
+entry declares (naming both numbers), before any model is loaded. The response
+echoes the paths the still was conditioned on, so `"image": []` means it was
+conditioned on the prompt alone. The page carries the same field as an image
+control; its upload is copied into `run/ui/`, inside the tree.
+
+What is **not** measured here: whether each editing LoRA behaves as its own card
+claims — nine of them are reachable and unrendered — and whether a style LoRA
+trained on text-to-image pairs helps or fights a reference. `docs/reference/lora-catalog.md`
+§10 keeps both open.
+
 ### Flags
 
 | Flag | Effect |
@@ -207,6 +238,7 @@ with no `lora` field is rendered exactly as it was before the feature existed.
 | `--out PATH` | absolute path; absent: `out/` with `<UTC>-<seed>.png` |
 | `--upscale` | permit the declared stage when the size exceeds the native ceiling |
 | `--lora alias[:weight]` | apply a LoRA the served entry declares; repeatable; absent: none. The alias, the weight and the count are the server's to accept or refuse |
+| `--image PATH` | a reference image to edit or condition on; repeatable, up to the entry's `image.max` (10 on the promoted entry, none on Z-Image's). A missing file and too many references are refused by the server |
 | `--json` | print the whole response object instead of the path |
 
 ### SD by default, HD on request
@@ -242,13 +274,18 @@ coltman-images start --ui --ui-port 8000     # somewhere else
 
 `start` echoes the address on its success line. The page is two equal halves: the
 form on the left, the still and its details on the right. The form has a prompt, a
-seed (leave it empty and the server picks one and reports it), a size switch, an
-**aspect** choice and a **steps** slider. The shape decides the box and the entry
-decides how big it may be, so neither the slider nor the shapes carry a size: the
-steps range and its starting position are the entry's `limits.steps` and `steps`,
-and every box is the largest at that shape inside the entry's ceiling (or, for HD,
-inside what the declared stage can serve). The status line sits at the top of the
-right half, where you are looking while a request runs.
+**reference image**, a seed (leave it empty and the server picks one and reports
+it), a size switch, an **aspect** choice and a **steps** slider. The shape decides
+the box and the entry decides how big it may be, so neither the slider nor the
+shapes carry a size: the steps range and its starting position are the entry's
+`limits.steps` and `steps`, and every box is the largest at that shape inside the
+entry's ceiling (or, for HD, inside what the declared stage can serve). The
+reference control is an image input and it hands the page a **path**: drop a
+picture there and the prompt says what to do with it, leave it empty and the
+request carries no reference at all — and an entry that declares no reference
+capability (Z-Image's) hides the control rather than offering something the door
+would refuse. The status line sits at the top of the right half, where you are
+looking while a request runs.
 
 The five shapes, and what each gives on the promoted entry:
 
@@ -282,6 +319,7 @@ What the page says, and what each line means:
 | **SD** | the native render — `upscale: null`; nothing was synthesized |
 | **HD** | a delivered size above the native ceiling, and the line names the base it started from (`upscale.from`) |
 | aspect | the shape; the box is computed from it, the entry's `limits.max_pixels` and the stage's factor |
+| reference (panel) | the reference paths the response echoed as `image`; the line is absent when the request carried none |
 | `steps` (form) | the entry's ladder: its range and its default come from `limits.steps`, and a position at the default is sent as no `steps` field at all |
 | `steps N` (panel) | the count the still was actually rendered with, from the response — not the slider's position |
 | the census | parameter counts exactly as the entry's adapter declares the keys |

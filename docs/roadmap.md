@@ -161,10 +161,59 @@ Three units, written from a read of the code and tracked here so they are not lo
 | **U1** | A neutral entry schema: the law validates the envelope and the shape, the adapter owns the model's names | prerequisite of P10 | **done, 2026-11-15**, guard 14, `d2e9149` |
 | **U2** | `steps` as a request field, with `limits.steps` bounding it | P11 | **done, 2026-11-15**, guard 15, `aa9b2ba` |
 | **U3** | Select a model per request and swap on demand | the promise in §6.1 | **closed, 2026-11-17** — by the operator's ruling, and not as swap-on-demand: the served entry is chosen by alias at `start` (`--model <id>`), and a request names no model (protocol section 4.1) |
+| **U4** | The request learns to carry an image: `image`, a list of paths, bounded by the entry's `image.max`; `-r` in `flux2klein_sd`; the page's image control | the nine editing LoRAs and klein's own reference conditioning | **done, 2026-11-17**, guard 19, matrix green |
 
 U3 needed three operator decisions before any code: where entries live, how the served entry is chosen, and what happens to a non-default entry whose assets are missing. B4 answered all three on 2026-11-17: entries live at `model/entry.yaml` and `model/entries/*.yaml`; the served entry is chosen by its `id` with `start --model`, with `--entry PATH` kept as a development shortcut; and an entry the caller did not select is read only for its `id`, so its missing asset refuses only when it is selected. Per-request selection and swap-on-demand were **not** built, and are not owed: the alias is a boot-time choice, and the card is single, so one model is served at a time.
 
 U1 also found a coupling the brief did not know about: `server.py` formatted its warm-up log line from Z-Image's census keys, so `start` would have failed on a foreign census *after* loading. Fixed in the same unit, and guard 14c now holds the core to the rule the law states.
+
+## U4 — the request learns to carry an image (2026-11-17)
+
+**What it is.** The request's closed vocabulary gains `image`: a list of absolute
+paths, the same shape as `out` — the caller names a file and the system invents no
+transport. The door refuses a path that is not a file, naming it, and a count above
+what the entry declares, with both numbers. The entry declares the capability as
+`image: {max: N}` — klein's ten references, Z-Image's none — and the adapter carries
+each path to its runtime as `-r`, once per file, in the caller's order. The
+response echoes the paths the still was conditioned on; the CLI carries
+`--image PATH`, repeatable; the page carries `gr.Image(type="filepath")` as an
+input, sends its path only when a file is set, and hides the control on an entry
+that declares no reference. Guard 19 proves the two refusals and one still that
+differs from the same request without its reference.
+
+**Why it exists.** Measured and recorded in `docs/reference/lora-catalog.md`: nine
+of klein's LoRAs are editing tools — `background-remove`, `tryon`, `outpaint`,
+`object-remove`, `zoom`, `consistence-edit`, `sim-to-real`, `texture-albedo` and the
+two seasonal ones — ten rows of §5.2 and nine ideas, because the pair is two
+files for one — and each expects a source image, a mask, a highlighted region or a
+clothing-agnostic body. The request carried no image, so they were listed as
+unusable. **What U4 unlocks, and it is two capabilities and not one:** those
+editing LoRAs, and klein's own reference conditioning — the model was trained for
+multi-reference editing and the vendored runtime exposes `-r, --ref-image`
+repeatably (`src/model/integrations/flux2.cpp` names the `flux2` reference preset,
+with `pass_to_dit` on and `ref_index_mode=increase`), so the pictures are the
+model's own input and not a wrapper this project invented.
+
+**The law's part, and why it is written the way it is.** Section 2 says the system
+reads exactly one thing, its own tree. Accepting a client's image is a **declared
+exception**, exactly as `out` already is for writing — and two paths reach it, of
+which only one is the exception. Through the page, gradio copies the upload into
+its file cache, which the server points at `run/ui/` inside the tree, so nothing
+leaves it and no exception is involved; measured, an upload posted to the page's
+own endpoint landed at `run/ui/<hash>/reference-512.png`. Through the CLI or the
+API, the path is the caller's own and may be anywhere, so it needs the exception,
+declared by name in `CALLER_READ_EXEMPTIONS` and printed by guard 8 beside the
+kernel exemption it already grants. An exemption stays a declared line and not a
+silent pass.
+
+**What is not measured.** Whether the other nine editing LoRAs behave as their cards
+claim — none of them has been rendered here; `background-remove` has, once. Whether
+a **style** LoRA trained on text-to-image pairs behaves with a reference image or
+fights the instruction, which is `docs/reference/lora-catalog.md` §10's open
+question — this unit must not claim either way. Whether a removed background would
+be an alpha channel: this path writes RGB PNGs and the still renders the
+checkerboard. And how more than one reference behaves: nothing here has rendered
+two at once, and ten is the model's documented count rather than a measured limit.
 
 ## The second model: FLUX.2 [klein], one runtime since 2026-11-17
 

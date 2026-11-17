@@ -37,6 +37,19 @@ a warning and the render continues**, so `denoise` re-checks the file's existenc
 before it builds the command — a declared asset that disappeared is an error, not
 a quiet still without the LoRA. `patches/README.md` records the runtime patch
 that makes a FLUX.2 LoRA apply in full rather than half.
+
+**Reference images are `-r`, once per image, in the order the caller gave them.**
+The runtime's `-r, --ref-image` is repeatable, and FLUX.2's model definition
+carries the `flux2` reference preset with `pass_to_dit` on
+(`src/model/diffusion/model.hpp`), so each reference is VAE-encoded and passed to
+the denoiser as a latent — this is klein's own multi-reference conditioning, not
+a wrapper around it. Two facts are declared: the child **exits 1** when a
+reference cannot be read, so a path that vanished between the door and the child
+is an error and not a still without it; and the order matters, because the
+runtime numbers references by index (`ref_index_mode=increase`), so the tuple the
+core resolves is passed through unchanged. An entry that declares no reference
+block never puts a `-r` on the command line, and a request without the field
+builds exactly the command it built before this existed.
 """
 
 from __future__ import annotations
@@ -98,7 +111,7 @@ class Flux2KleinSdError(Exception):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Selection:
-    """One request as the child needs it: the prompt and the LoRAs it names.
+    """One request as the child needs it: the prompt, the LoRAs, the references.
 
     This is the opaque value `encode` hands `denoise`. It exists because the
     selection has to cross that boundary without the adapter keeping state
@@ -108,6 +121,7 @@ class _Selection:
 
     prompt: str
     loras: tuple[Lora, ...] = ()
+    images: tuple[pathlib.Path, ...] = ()
 
 
 def _lora_name(path: pathlib.Path) -> str:
@@ -257,6 +271,7 @@ def _command(
     destination: pathlib.Path,
     offload: bool,
     loras: tuple[Lora, ...] = (),
+    images: tuple[pathlib.Path, ...] = (),
 ) -> list[str]:
     """The child's command line, built from the entry and the host's declaration.
 
@@ -274,7 +289,12 @@ def _command(
     (protocol section 2). A request that names none adds neither the tags nor the
     flag, so its command line is exactly what it was before LoRAs existed.
 
-    It is a function of its own so the flag's presence is observable without
+    `images` is the request's reference list, in the order it was named: one
+    `-r <path>` per file, because the runtime's flag is repeatable and a
+    reference's position is what it numbers. A request that names none adds no
+    `-r` at all.
+
+    It is a function of its own so the flags' presence is observable without
     starting the child: a test can build both command lines and read them.
     """
     command = [
@@ -290,6 +310,8 @@ def _command(
         "-s", str(int(seed)),
         "-o", str(destination),
     ]
+    for image in images:
+        command += ["-r", str(image)]
     if loras:
         command += ["--lora-model-dir", str(PROJECT_ROOT)]
     if offload:
@@ -312,6 +334,15 @@ class Flux2KleinSdAdapter:
     Declared as a class attribute because `load_adapter` reads it before a still
     exists: an entry with a catalog behind an adapter without this flag is
     refused at boot (protocol section 6.3).
+    """
+
+    supports_images = True
+    """`sd-cli` takes `-r` once per reference, so this adapter carries them.
+
+    The same declaration as `supports_loras` and for the same reason: an entry
+    that declares how many references its model accepts and names an adapter
+    without this flag is refused at boot, not served with the picture dropped
+    (protocol section 6.3).
     """
 
     def __init__(self, entry: Entry) -> None:
@@ -365,15 +396,23 @@ class Flux2KleinSdAdapter:
         """The census this adapter last measured."""
         return dict(self._census)
 
-    def encode(self, prompt: str, loras: tuple[Lora, ...] = ()) -> _Selection:
-        """Carry the prompt and the request's LoRA selection across the boundary.
+    def encode(
+        self,
+        prompt: str,
+        loras: tuple[Lora, ...] = (),
+        images: tuple[pathlib.Path, ...] = (),
+    ) -> _Selection:
+        """Carry the prompt, the LoRAs and the references across the boundary.
 
         `sd-cli` takes `-p <prompt>` and owns the encoder, so there is no feature
         tensor to carry across this boundary; the value this adapter returns is
         the selection itself, which is the honest shape: the child is the model.
         The LoRAs are not applied here — they are applied by the command line
         `denoise` builds — but they arrive through this value so the adapter
-        never keeps a selection on itself between requests.
+        never keeps a selection on itself between requests. The references are
+        re-checked here for the same reason a LoRA is: the child exits 1 on a
+        reference it cannot read, so a file that disappeared between the door and
+        the child is an error with a sentence, not a failed render with a log.
         """
         self.last_load_s = 0.0
         for lora in loras:
@@ -385,7 +424,13 @@ class Flux2KleinSdAdapter:
                     f"loras: {lora.alias!r} resolves to {lora.path}, which is not a file — the "
                     "runtime would drop the tag and render without it"
                 )
-        return _Selection(prompt=prompt, loras=tuple(loras))
+        for image in images:
+            if not pathlib.Path(image).is_file():
+                raise Flux2KleinSdError(
+                    f"image: {image} is not a file — sd-cli exits 1 on a reference it cannot read, "
+                    "so the door's check is repeated against the file the child will open"
+                )
+        return _Selection(prompt=prompt, loras=tuple(loras), images=tuple(images))
 
     def denoise(
         self, features: object, width: int, height: int, seed: int, steps: int
@@ -420,6 +465,7 @@ class Flux2KleinSdAdapter:
             destination,
             self.offload,
             selection.loras,
+            selection.images,
         )
 
         before = _measure(entry)
@@ -469,13 +515,14 @@ class Flux2KleinSdAdapter:
                 f"census: the artefacts changed while sd-cli ran ({before} → {self._census})"
             )
         logger.info(
-            "sd-cli: %dx%d seed=%d steps=%d offload=%s loras=%s in %.2f s (census %s)",
+            "sd-cli: %dx%d seed=%d steps=%d offload=%s loras=%s refs=%d in %.2f s (census %s)",
             width,
             height,
             seed,
             steps,
             "on" if self.offload else "off",
             [lora.alias for lora in selection.loras] or "none",
+            len(selection.images),
             elapsed,
             self._census,
         )
