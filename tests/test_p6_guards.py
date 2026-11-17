@@ -4,7 +4,7 @@ Runs under the production interpreter and the declared command:
 
     .venv/bin/python -m unittest discover -s tests -v
 
-Every test runs under a per-test deadline — 300 s, `COLTMAN_TEST_DEADLINE_S` to change
+Every test runs under a per-test deadline — 420 s, `COLTMAN_TEST_DEADLINE_S` to change
 it — that turns a hang into a failure naming the test instead of a run nobody can end,
 and `tearDownModule` kills any `coltman_images.server` that outlived its guard and fails
 if it found one. A guard that can hang the matrix, or leave the card taken, is a guard
@@ -163,8 +163,13 @@ ERR: dict[str, str] = {}
 
 # --- the per-test deadline --------------------------------------------------
 
-DEADLINE_S = float(os.environ.get("COLTMAN_TEST_DEADLINE_S", "300"))
-"""One test's budget, 300 s unless `COLTMAN_TEST_DEADLINE_S` sets another number of seconds."""
+DEADLINE_S = float(os.environ.get("COLTMAN_TEST_DEADLINE_S", "420"))
+"""One test's budget, 420 s unless `COLTMAN_TEST_DEADLINE_S` sets another number of seconds.
+
+420 is 2.2x the slowest test measured on 2026-11-17 (guard 3, four 1280x720 renders,
+192.6 s). A budget barely above the real cost turns a contended card into a false red,
+and a false red costs more than a slow one.
+"""
 
 
 class TestDeadline(AssertionError):

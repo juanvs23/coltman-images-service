@@ -444,7 +444,7 @@ Six steps, each built and exercised alone before the next begins.
 
 Eighteen guards are declared, each with the failure it catches. All eighteen are written, and the suite collects nineteen test methods, because guard 4 is written as two (`04` and `04b`). This section is the only place the count of the current matrix is declared: every other document names the guards without counting them. A dated record of a past run keeps that run's own numbers — how many methods it collected, how long it took — because that is what it measured; `tests/e2e/p6-guards/README.md` holds the P6 run of 2026-11-15, and its twelve test methods are that run's, not the matrix's.
 
-**The matrix has a per-test deadline and refuses to finish with a live server**, because that is what makes the guards trustworthy: a test that overruns its budget — 300 s, `COLTMAN_TEST_DEADLINE_S` to change it — fails by name instead of hanging the run, and the module teardown kills any `coltman_images.server` process it finds and then fails on having found one, so a guard that leaves the card taken is a red run and not a phantom the next run inherits.
+**The matrix has a per-test deadline and refuses to finish with a live server**, because that is what makes the guards trustworthy: a test that overruns its budget — 420 s, `COLTMAN_TEST_DEADLINE_S` to change it — fails by name instead of hanging the run, and the module teardown kills any `coltman_images.server` process it finds and then fails on having found one, so a guard that leaves the card taken is a red run and not a phantom the next run inherits.
 
 | # | Guard | Failure it catches |
 | --- | --- | --- |
