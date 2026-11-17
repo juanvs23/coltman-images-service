@@ -70,7 +70,7 @@ from urllib.parse import urlsplit
 
 from . import render as render_module
 from .adapter import AdapterError, load_adapter
-from .entry import PROJECT_ROOT, Entry, EntryError, load_entry
+from .entry import PROJECT_ROOT, Entry, EntryError, find_entry, load_entry
 from .upscale import UpscaleError, load_declaration
 
 logger = logging.getLogger(__name__)
@@ -224,16 +224,19 @@ class WarmServer:
 
     # --- boot ---------------------------------------------------------------
 
-    def boot(self) -> None:
+    def boot(self, entry_path: str | pathlib.Path | None = None) -> None:
         """Resolve, validate, load the warm parts, warm up, and write the state.
 
-        Raises `EntryError` for anything the entry declares badly or cannot find
-        — the caller turns that into exit 3, before any GPU work.
+        `entry_path` is the file the alias resolved to, or the path the operator
+        named at `start --entry` (the development shortcut); absent means
+        `model/entry.yaml`, the promoted default. Raises `EntryError` for
+        anything the entry declares badly or cannot find — the caller turns that
+        into exit 3, before any GPU work.
         """
         self.started_at = _utc_now()
         began = time.perf_counter()
 
-        entry = load_entry()
+        entry = load_entry(entry_path)
         # The stage's declaration is validated here too: its weights are a
         # declared asset like any other, so a missing one is exit 3 at start
         # rather than a 500 on the first request that needs it.
@@ -927,6 +930,24 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
+        "--model",
+        default=None,
+        metavar="ID",
+        help=(
+            "the entry to serve, named by its id; resolved across model/entry.yaml and "
+            "model/entries/*.yaml. Absent: model/entry.yaml, the promoted default"
+        ),
+    )
+    parser.add_argument(
+        "--entry",
+        default=None,
+        metavar="PATH",
+        help=(
+            "the model entry file to serve — a development shortcut that skips the id "
+            "resolution; absent: model/entry.yaml"
+        ),
+    )
+    parser.add_argument(
         "--ui",
         action="store_true",
         help=(
@@ -962,6 +983,12 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.port <= 65535:
         logger.error("port: %d is outside 1..65535", args.port)
         return EXIT_SERVER_UNAVAILABLE
+    if args.model is not None and args.entry is not None:
+        logger.error(
+            "model: --model names an entry by id and --entry names a file — two ways to "
+            "choose the same thing, not two choices; pass one. Nothing was loaded"
+        )
+        return EXIT_INVALID_REQUEST
     # The declared idle period is refused here, before the mutex is taken and
     # long before a weight is loaded: a period shorter than the boot it saves is
     # a server that spends more time starting than serving (section 6).
@@ -1055,7 +1082,15 @@ def main(argv: list[str] | None = None) -> int:
 def _serve(args: argparse.Namespace, ui_port: int | None = None) -> int:
     app = WarmServer()
     try:
-        app.boot()
+        # `--model` is the mechanism: the alias resolves across the promoted entry
+        # and the entries directory. `--entry` is the development shortcut that
+        # names the file directly, and its absence means the promoted entry.
+        entry_path = find_entry(args.model) if args.model is not None else args.entry
+    except EntryError as exc:
+        logger.error("%s", exc)
+        return EXIT_ASSET_MISSING
+    try:
+        app.boot(entry_path)
     except (AdapterError, EntryError, UpscaleError) as exc:
         logger.error("%s", exc)
         return EXIT_ASSET_MISSING

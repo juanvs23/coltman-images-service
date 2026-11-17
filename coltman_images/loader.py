@@ -256,7 +256,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Load the entry's transformer and report its census."
     )
-    parser.add_argument("--entry", default=None, help="entry file (default: model/entry.yaml)")
+    parser.add_argument(
+        "--entry",
+        default=str(
+            pathlib.Path(__file__).resolve().parent.parent / "model" / "entries" / "zimage.yaml"
+        ),
+        help=(
+            "entry file to load (default: model/entries/zimage.yaml) — this loader is "
+            "Z-Image's, and that is the entry it reads"
+        ),
+    )
     parser.add_argument(
         "--device", default="cpu", help="device to materialize on (default: cpu)"
     )

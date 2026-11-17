@@ -1,0 +1,68 @@
+{
+  "prompt": "a lighthouse at dusk, dramatic clouds",
+  "layers_read_by_flux2": [
+    9,
+    18,
+    27
+  ],
+  "int8_on_card": {
+    "encode_s": 2.51,
+    "allocated_mib": 5601,
+    "reserved_mib": 5668
+  },
+  "bf16_on_cpu": {
+    "encode_s": 95.82
+  },
+  "shape": [
+    1,
+    512,
+    7680
+  ],
+  "comparison": {
+    "prompt_tokens": 20,
+    "layer_9": {
+      "prompt": {
+        "cosine": 0.999983,
+        "max_abs_diff": 150.254883,
+        "mean_abs_diff": 0.113719,
+        "reference_abs_mean": 1.114357
+      },
+      "padding": {
+        "cosine": 0.998726,
+        "max_abs_diff": 0.691422,
+        "mean_abs_diff": 0.023061,
+        "reference_abs_mean": 0.342405
+      }
+    },
+    "layer_18": {
+      "prompt": {
+        "cosine": 0.999988,
+        "max_abs_diff": 153.9375,
+        "mean_abs_diff": 0.121451,
+        "reference_abs_mean": 1.249542
+      },
+      "padding": {
+        "cosine": 0.969809,
+        "max_abs_diff": 79.107925,
+        "mean_abs_diff": 0.18017,
+        "reference_abs_mean": 0.876241
+      }
+    },
+    "layer_27": {
+      "prompt": {
+        "cosine": 1.00002,
+        "max_abs_diff": 150.496094,
+        "mean_abs_diff": 0.161632,
+        "reference_abs_mean": 2.274586
+      },
+      "padding": {
+        "cosine": 0.966745,
+        "max_abs_diff": 61.922867,
+        "mean_abs_diff": 0.454649,
+        "reference_abs_mean": 1.709144
+      }
+    },
+    "finite": true
+  },
+  "speedup": 38.11
+}

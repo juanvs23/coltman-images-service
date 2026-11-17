@@ -1,36 +1,56 @@
-id: z-image-turbo-fp8
+# The promoted default entry: FLUX.2 [klein] 4B through the community Q4_K_M
+# GGUF, on the `ggml` runtime. A service booted without `--model` serves this.
+#
+# Two entries coexist and one model is served at a time, because the card is
+# single (protocol section 6.1). Z-Image Turbo FP8 — the historical production
+# model — lives unchanged at `model/entries/zimage.yaml` and is served with
+# `start --model z-image-turbo-fp8`; this entry is served with
+# `start --model flux2-klein-4b-gguf-q4`.
+#
+# This entry's `checkpoint` is the quantised **diffusion model**, and its
+# components are the two other artefacts `sd-cli` needs — the Qwen3-4B encoder as
+# a GGUF and the FLUX.2 VAE as the safetensors the official pipeline ships — plus
+# the vendored binary itself. Nothing here is read by Python's model stack: the
+# adapter runs `sd-cli` as a subprocess.
+id: flux2-klein-4b-gguf-q4
 
-# Which model adapter serves this entry (protocol section 6.3). The core does
-# not know what Z-Image is; this names the module that does.
-adapter: zimage
+adapter: flux2klein_sd
 
-checkpoint: model/assets/checkpoint.safetensors
+checkpoint: model/assets/flux2-klein/gguf/flux-2-klein-4b-Q4_K_M.gguf
 
 components:
-  transformer_config: model/z_image.json
-  vae: model/assets/vae.safetensors
-  vae_config: model/assets/vae_config.json
-  text_encoder: model/assets/qwen3/qwen3_quanto_bf16_int8.safetensors
-  text_encoder_dir: model/assets/qwen3
-  scheduler_config: model/assets/scheduler_config.json
+  vae: model/assets/flux2-klein/official/vae/diffusion_pytorch_model.safetensors
+  llm: model/assets/flux2-klein/gguf/Qwen3-4B-Q4_K_M.gguf
+  cli: vendor/stable-diffusion.cpp/build/bin/sd-cli
 
 digests:
-  transformer_config: sha256:06d49d1ae533f825c4704cc616fc8bc7826e9d449dde292cc7a95163c69af24a
+  # The runtime is installed inside the tree and never committed (protocol
+  # section 2, declared exception), so its identity is pinned here: this is the
+  # binary built from commit 532d2c1, and a rebuilt one must update this line.
+  cli: sha256:a5f17d22af14d5f13715b6a7f6248f18eb42da2a1e479c684f2658c22f2fe295
+  vae: sha256:ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04
+  llm: sha256:f6f851777709861056efcdad3af01da38b31223a3ba26e61a4f8bf3a2195813a
 
-steps: 12
-guidance: 0.0
+# Eight steps, by the operator's ruling of 2026-11-17. Measured at 1024x1024,
+# one prompt and one seed: 4 steps cost 10.8 s, 6 cost 14.1 s and 8 cost 16.9 s
+# (+31 % and +56 % of the four-step wall), and **four steps break an occlusion
+# that six and eight render correctly** — the bartender's body merged into the
+# bar counter (docs/reference/flux2-klein.md, T3). The range below is bounded by
+# what was rendered: 8 is the largest count measured, so nothing above 8 is
+# declared.
+steps: 8
+guidance: 1.0
 
-# The largest area this card has been measured to render: 1280x720, 43.5 s,
-# 6698 MiB reserved leaving 1159 MiB of slack. Raising it is a measurement,
-# not a configuration change.
-#
-# `steps` is the range the ladder measured and the operator ruled (protocol
-# section 12): 12, declared as `steps` above, stays inside it; 8-10 is the fast
-# mode, 14 the cut, 16 the ceiling. The same weights serve every value, so
-# nothing swaps; a request outside the range is refused at the door.
 limits:
-  max_pixels: 921600
-  steps: {min: 8, max: 16}
+  # 1152x1152 = 1,327,104 px, measured at four steps: 13.4 s and 4701 MiB with
+  # 3156 MiB of the card's 7857 usable still free (T4). It is the largest box
+  # rendered, so it is the ceiling. The operator read the ladder's contact sheet
+  # as the best distribution of figures at 1152x1152 — an indication resting on
+  # one prompt and one seed, not a distribution — and the defaults below follow
+  # it. The box and the eight-step default are two measured values, not one
+  # measured pair: the ladder ran the box at four steps.
+  max_pixels: 1327104
+  steps: {min: 4, max: 8}
 
 request_fields:
   - prompt
@@ -41,15 +61,19 @@ request_fields:
   - steps
   - upscale
 
+# The subprocess owns the tensor graph and its stdout is prose, so this path
+# cannot count parameters. What it can prove is what it handed the child: three
+# artefacts, 5,269,713,294 bytes in total (the diffusion model, the encoder and
+# the VAE). The adapter measures this from the files it passes on every call.
 expected_census:
-  float8: 239
-  plain: 282
-  other: 0
-  total: 521
+  artifacts: 3
+  bytes: 5269713294
 
+# The best measured box, by the operator's ruling of 2026-11-17 (see the ceiling
+# comment: one prompt, one seed).
 defaults:
-  width: 1280
-  height: 720
+  width: 1152
+  height: 1152
   format: png
 
 warmup:

@@ -90,8 +90,30 @@ PORT = 8420
 PROTOCOL_CENSUS = {"float8": 239, "plain": 282, "other": 0, "total": 521}
 
 # Protocol section 6.1 and 10, guard 15: the entry's step range, and its default.
+#
+# These are **Z-Image's declaration** (`model/entries/zimage.yaml`), the entry the
+# shared fixture serves, not a range of the law's: `limits.steps` belongs to the
+# entry, and the law's rule is that a request outside it is refused at the door
+# (protocol section 4.1). The promoted entry — FLUX.2 [klein], at
+# `model/entry.yaml` — declares its own, different range.
 PROTOCOL_STEPS = {"min": 8, "max": 16}
 PROTOCOL_DEFAULT_STEPS = 12
+
+ZIMAGE_ID = "z-image-turbo-fp8"
+"""Z-Image's entry id, the alias the shared fixture serves (`start --model`)."""
+
+ZIMAGE_ENTRY = ROOT / "model" / "entries" / "zimage.yaml"
+"""Z-Image's entry file. Its census, ceiling and ladder are the ones guards 2-7,
+9, 10, 13 and 16 were written against, and the recorded baseline is its still."""
+
+POINT_STEPS = {"min": 4, "max": 4}
+"""A synthetic single-value range, not any entry's real declaration.
+
+The law has to admit it (protocol section 4.1): `limits.steps` is the entry's
+range, and a range of one value is a range. The guard proves the law admits it
+and refuses its neighbours, which is what keeps a distilled model's regime
+expressible by an entry rather than hardcoded in the law.
+"""
 
 # One prompt and one seed for every still that has to be comparable. Nothing
 # declares this prompt: it is test input, not a system default.
@@ -299,6 +321,7 @@ _REQUIRED_SOURCES = (
     "coltman_images/upscale.py",
     "coltman_images/adapters/__init__.py",
     "coltman_images/adapters/zimage.py",
+    "coltman_images/adapters/flux2klein_sd.py",
     "bin/coltman-images",
 )
 """Guard 8 must not pass by scanning nothing. These files must all be read."""
@@ -366,7 +389,12 @@ def _declaration_documents() -> list[pathlib.Path]:
     Binary weights and the multi-megabyte tokenizer vocabulary are inputs, not
     declarations; the size cap keeps the scan to documents that could hold a path.
     """
-    documents = [ROOT / "model" / "entry.yaml", ROOT / "model" / "upscaler.yaml", ROOT / "model" / "z_image.json"]
+    documents = [
+        ROOT / "model" / "entry.yaml",
+        ROOT / "model" / "upscaler.yaml",
+        ROOT / "model" / "z_image.json",
+        *sorted((ROOT / "model" / "entries").glob("*.yaml")),
+    ]
     for path in sorted((ROOT / "model" / "assets").rglob("*")):
         if path.is_file() and path.suffix in (".json", ".yaml", ".yml") and path.stat().st_size <= 256 * 1024:
             documents.append(path)
@@ -648,7 +676,7 @@ class ContractCase(GuardCase):
         from coltman_images.entry import load_entry
         from coltman_images.loader import CensusError, assert_census
 
-        entry = load_entry()
+        entry = load_entry(ZIMAGE_ENTRY)
         findings: dict[str, object] = {"expected_census": entry.expected_census}
 
         # The entry's own census must pass, or the comparison below proves nothing.
@@ -1039,7 +1067,11 @@ class _G15StubAdapter:
         pass
 
 
-def _g15_entry(steps: int = PROTOCOL_DEFAULT_STEPS, name: str = "g15-entry.yaml") -> pathlib.Path:
+def _g15_entry(
+    steps: int = PROTOCOL_DEFAULT_STEPS,
+    name: str = "g15-entry.yaml",
+    steps_range: dict | None = None,
+) -> pathlib.Path:
     """A synthetic entry the law accepts, with a range this guard can straddle."""
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     asset = EVIDENCE / "g15-asset.bin"
@@ -1051,7 +1083,10 @@ def _g15_entry(steps: int = PROTOCOL_DEFAULT_STEPS, name: str = "g15-entry.yaml"
         "components": {"weights": str(asset)},
         "steps": steps,
         "guidance": 0.0,
-        "limits": {"max_pixels": G15_SIDE * G15_SIDE, "steps": dict(PROTOCOL_STEPS)},
+        "limits": {
+            "max_pixels": G15_SIDE * G15_SIDE,
+            "steps": dict(PROTOCOL_STEPS if steps_range is None else steps_range),
+        },
         "request_fields": ["prompt", "seed", "width", "height", "out", "steps"],
         "expected_census": {"parameters": 1},
         "defaults": {"width": G15_SIDE, "height": G15_SIDE, "format": "png"},
@@ -1103,7 +1138,20 @@ G13_APP_ATTRIBUTES = frozenset({"submit", "depth", "entry", "declaration"})
 outside the seam. The names are listed positively so a new attribute has to be
 declared here, in the law's vocabulary, before the page may use it."""
 
-G13_FORBIDDEN_SIZE_CONSTANTS = (720, 768, 960, 1024, 1280, 1440, 1536, 1920, 2560, 921600)
+G13_FORBIDDEN_SIZE_CONSTANTS = (
+    720,
+    768,
+    960,
+    1024,
+    1152,
+    1280,
+    1440,
+    1536,
+    1920,
+    2560,
+    921600,
+    1327104,
+)
 """The entry's numbers, which the page must not carry (roadmap P9 step 4).
 
 `limits.max_pixels` and the boxes it permits are per-entry, so a size written into
@@ -1724,7 +1772,7 @@ class ServiceCase(GuardCase):
         from coltman_images.entry import EntryError, load_entry
         from coltman_images.render import render
 
-        entry = load_entry()
+        entry = load_entry(ZIMAGE_ENTRY)
         low, high = PROTOCOL_STEPS["min"], PROTOCOL_STEPS["max"]
         outside = (low - 1, high + 1)
         self.assertEqual(
@@ -1741,6 +1789,35 @@ class ServiceCase(GuardCase):
             load_entry(_g15_entry(steps=low - 1, name="g15-entry-outside.yaml"))
         self.assertIn("limits.steps", str(loose.exception), "the refusal did not name the range")
         self.assertIn(f"{low}..{high}", str(loose.exception), "the refusal did not name the bounds")
+
+        # 1b. the range belongs to the entry, and a single-value range is one.
+        # A distilled model may declare a point as its regime: the law must admit
+        # that range (protocol section 4.1), and admit nothing outside it either.
+        distilled = load_entry(
+            _g15_entry(
+                steps=POINT_STEPS["min"],
+                name="g15-entry-distilled.yaml",
+                steps_range=POINT_STEPS,
+            )
+        )
+        self.assertEqual(
+            (distilled.steps_min, distilled.steps_max),
+            (POINT_STEPS["min"], POINT_STEPS["max"]),
+            "the law refused or moved a distilled model's declared range",
+        )
+        self.assertEqual(
+            distilled.accepts({"prompt": "x", "steps": POINT_STEPS["min"]}),
+            [],
+            "the law refused the step count a distilled entry declares as its regime",
+        )
+        for off in (POINT_STEPS["min"] - 1, POINT_STEPS["min"] + 1):
+            said = " ".join(distilled.accepts({"prompt": "x", "steps": off}))
+            self.assertIn("steps", said, f"steps {off} was not refused by name: {said}")
+            self.assertIn(
+                f"{POINT_STEPS['min']}..{POINT_STEPS['max']}",
+                said,
+                f"steps {off}: the refusal did not name the entry's own range: {said}",
+            )
 
         # 2. the door: out of range refused before the adapter exists.
         adapter_module._REGISTRY[G15_STUB] = f"{__name__}:_G15StubAdapter"
@@ -1961,7 +2038,7 @@ class ServiceCase(GuardCase):
         status, health = self.obs("guard02.health")
         self.assertEqual(status, 200, f"/health did not answer: {health}")
 
-        entry = load_entry()
+        entry = load_entry(ZIMAGE_ENTRY)
         observed = {
             "health": health.get("census"),
             **{f"guard3.render{i + 1}": render["body"].get("census") for i, render in enumerate(self.obs("guard03.renders"))},
@@ -2190,7 +2267,7 @@ class ServiceCase(GuardCase):
         retiring_before = _log_count("— retiring")
 
         # 2. A declared period the system accepts, and a warm server.
-        started = _cli("start", "--idle-timeout", f"{timeout:g}", timeout=600)
+        started = _cli("start", "--idle-timeout", f"{timeout:g}", "--model", ZIMAGE_ID, timeout=600)
         print(f"guard 16: start --idle-timeout {timeout:g} → exit {started.returncode}; {started.stdout.strip()}")
         _put("guard16.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
         self.assertEqual(started.returncode, 0, f"start failed: {started.stderr}")
@@ -2388,8 +2465,10 @@ class ServiceCase(GuardCase):
 
         # The real numbers, read as a declaration rather than resolved: a full
         # `load_entry` would hash 6.29 GB for a fact this guard only needs to
-        # compare, and guard 4 already owns the resolution.
-        declaration = yaml.safe_load((ROOT / "model" / "entry.yaml").read_text(encoding="utf-8"))
+        # compare, and guard 4 already owns the resolution. It is Z-Image's entry
+        # that this half is about — the recorded baseline and the sizes the page's
+        # five shapes were fixed against.
+        declaration = yaml.safe_load(ZIMAGE_ENTRY.read_text(encoding="utf-8"))
         stage = yaml.safe_load((ROOT / "model" / "upscaler.yaml").read_text(encoding="utf-8"))
         real = types.SimpleNamespace(
             defaults=dict(declaration["defaults"]),
@@ -2776,7 +2855,7 @@ class ServiceCase(GuardCase):
             "free it first, or the guard would be measuring somebody else's page",
         )
 
-        started = _cli("start", "--ui", timeout=600)
+        started = _cli("start", "--ui", "--model", ZIMAGE_ID, timeout=600)
         print(f"guard 13: start --ui → exit {started.returncode}; {started.stdout.strip()}")
         _put("guard13.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
         self.assertEqual(started.returncode, 0, f"start --ui failed: {started.stderr}")
@@ -2981,8 +3060,14 @@ def _generate_without_server() -> dict:
 
 
 def _start() -> dict:
+    """Start the shared server on Z-Image, the entry this matrix measures.
+
+    `--model` is the mechanism (protocol section 5.1), and the alias is explicit
+    on purpose: the promoted default is FLUX.2 [klein], while the census, the
+    ladder and the recorded baseline these guards assert are Z-Image's.
+    """
     began = time.perf_counter()
-    completed = _cli("start", timeout=600)
+    completed = _cli("start", "--model", ZIMAGE_ID, timeout=600)
     return {
         "exit": completed.returncode,
         "stdout": completed.stdout,

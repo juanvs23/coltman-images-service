@@ -32,6 +32,10 @@ dist/
 .venv/
 venv/
 
+# The ggml runtime — installed inside the tree, built from source, never committed.
+# Its identity travels as the digest an entry pins (protocol sections 2 and 3).
+vendor/
+
 # Model assets — inputs, never committed
 model/assets/
 *.safetensors

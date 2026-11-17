@@ -9,7 +9,12 @@ codes of section 5.4.
 All three commands are built: `start` and `stop` own the process, and `generate`
 POSTs one request and prints what came back — rendering stays in the server.
 `start --ui` additionally asks that process for a web page on its own port; this
-command never imports gradio and never serves anything itself.
+command never imports gradio and never serves anything itself. `start --model ID`
+serves an entry chosen by its `id`, resolved across `model/entry.yaml` and
+`model/entries/*.yaml`; `generate --model ID` checks that the running server is
+serving that entry and refuses when it is not. `start --entry PATH` and
+`generate --entry PATH` remain as a **development shortcut** that names the file
+directly, skipping the id resolution.
 
 Standard library only, so it runs under any interpreter on this machine; the
 *server* it launches always runs under the project's own `.venv/bin/python`.
@@ -46,6 +51,34 @@ the lock when its owner dies.
 LOG_FILE = RUN_DIR / "server.log"
 PYTHON = ROOT / ".venv" / "bin" / "python"
 MODULE = "coltman_images.server"
+DEFAULT_ENTRY = ROOT / "model" / "entry.yaml"
+"""The entry `start` serves when the operator names none (protocol section 6.1)."""
+
+ENTRY_PROBE = (
+    "import sys; from coltman_images.entry import load_entry; print(load_entry(sys.argv[1]).id)"
+)
+"""How this client learns what id an entry declares.
+
+An entry is resolved by `coltman_images/entry.py` and by nothing else (protocol
+section 9, rule 7). This command is standard library only — it runs under any
+interpreter on this machine — and that reader needs the project's interpreter and
+its pinned PyYAML, so the question is asked there instead of re-parsing the file
+here.
+"""
+
+MODEL_PROBE = (
+    "import sys; from coltman_images.entry import EntryError, find_entry\n"
+    "try:\n"
+    "    print(find_entry(sys.argv[1]))\n"
+    "except EntryError as exc:\n"
+    "    sys.exit(str(exc))\n"
+)
+"""How this client resolves an `--model` id to the entry file it names.
+
+The alias is the entry's own `id`, and the scan that matches it belongs to
+`coltman_images/entry.py`; the CLI does not re-implement it and imports no YAML.
+A refusal prints the ids this tree declares, because the reader composes it.
+"""
 
 EXIT_OK = 0
 EXIT_RENDER_FAILED = 1
@@ -170,6 +203,8 @@ def _report_running(
     requested_idle_timeout: float | None = None,
     requested_ui: bool = False,
     requested_ui_port: int | None = None,
+    requested_entry: str | None = None,
+    requested_model: str | None = None,
 ) -> int:
     pid = health.get("pid", state.get("pid"))
     port = health.get("port", state.get("port"))
@@ -189,6 +224,16 @@ def _report_running(
             f"--ui (port {asked}) ignored: the running server keeps the surface it was "
             "started with — its address is not in the state file or /health, so this "
             "command cannot compare; stop it first to change it"
+        )
+    if requested_model is not None and requested_model != health.get("model"):
+        _note(
+            f"--model {requested_model} ignored: the running server keeps the entry it was "
+            f"started with and is serving {health.get('model')}; stop it first to change it"
+        )
+    if requested_entry is not None:
+        _note(
+            f"--entry {requested_entry} ignored: the running server keeps the entry it was "
+            f"started with and is serving {health.get('model')}; stop it first to change it"
         )
     print(f"coltman-images: already running — pid {pid}, port {port}, state {health.get('status')}")
     return EXIT_OK
@@ -221,6 +266,62 @@ def _lock_state() -> tuple[bool, int | None]:
         handle.close()
 
 
+def _entry_path(named: str) -> pathlib.Path:
+    """The entry the operator named, as an absolute path.
+
+    A relative path is resolved against the operator's working directory, the way
+    a shell resolves it, and made absolute before it crosses into the server
+    process — whose cwd is the project root, not the operator's.
+    """
+    return pathlib.Path(named).expanduser().resolve()
+
+
+class _EntryUnreadable(Exception):
+    """The entry named on the command line is not one this system can resolve."""
+
+
+def _entry_id(path: pathlib.Path) -> str:
+    """The `id` the entry declares, or a refusal naming what is wrong with it."""
+    try:
+        completed = subprocess.run(
+            [str(PYTHON), "-c", ENTRY_PROBE, str(path)],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _EntryUnreadable(f"the project interpreter could not resolve it: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise _EntryUnreadable(detail[-1] if detail else f"exit {completed.returncode}")
+    lines = completed.stdout.strip().splitlines()
+    if not lines:
+        raise _EntryUnreadable("the entry resolved to no id")
+    return lines[-1]
+
+
+def _model_path(alias: str) -> pathlib.Path:
+    """The entry file `alias` names, or a refusal listing the ids this tree declares."""
+    try:
+        completed = subprocess.run(
+            [str(PYTHON), "-c", MODEL_PROBE, alias],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _EntryUnreadable(f"the project interpreter could not resolve it: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise _EntryUnreadable(detail[-1] if detail else f"exit {completed.returncode}")
+    lines = completed.stdout.strip().splitlines()
+    if not lines:
+        raise _EntryUnreadable("the model id resolved to no entry")
+    return pathlib.Path(lines[-1])
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     # The mutex comes first. A deleted state file must never let a second
     # process load 6 GB onto a card that already holds one.
@@ -237,6 +338,8 @@ def cmd_start(args: argparse.Namespace) -> int:
             args.idle_timeout,
             args.ui,
             args.ui_port,
+            args.entry,
+            args.model,
         )
         who = f"pid {holder}" if holder else "another process"
         _note(
@@ -251,7 +354,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         port = state.get("port", DEFAULT_PORT)
         health = _health(port) if isinstance(port, int) else None
         if health is not None and health.get("status") == "warm":
-            return _report_running(state, health, args.port, args.idle_timeout, args.ui, args.ui_port)
+            return _report_running(
+                state, health, args.port, args.idle_timeout, args.ui, args.ui_port, args.entry, args.model
+            )
 
         pid = state.get("pid")
         if _our_server(pid):
@@ -280,9 +385,26 @@ def cmd_start(args: argparse.Namespace) -> int:
         _note(f"the project interpreter is missing: {PYTHON}")
         return EXIT_ASSET_MISSING
 
+    entry = _entry_path(args.entry) if args.entry is not None else None
+    if args.model is not None:
+        # The alias is resolved here so an unknown one is refused before a child
+        # is spawned, and the message is the reader's own, with the ids this
+        # tree declares. The alias — not the path — travels to the server.
+        try:
+            _model_path(args.model)
+        except _EntryUnreadable as exc:
+            _note(f"--model {args.model}: {exc}")
+            return EXIT_ASSET_MISSING
+
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     port = DEFAULT_PORT if args.port is None else args.port
     command = [str(PYTHON), "-u", "-m", MODULE, "--port", str(port)]
+    if args.model is not None:
+        command += ["--model", args.model]
+    elif entry is not None:
+        # The entry travels as an absolute path: the child's cwd is the project
+        # root, not the operator's, and the server resolves the file it is handed.
+        command += ["--entry", str(entry)]
     if args.idle_timeout is not None:
         command += ["--idle-timeout", repr(float(args.idle_timeout))]
     if args.ui:
@@ -437,9 +559,47 @@ def cmd_generate(args: argparse.Namespace) -> int:
         _note("the server is not running — run `coltman-images start` first")
         return EXIT_SERVER_UNAVAILABLE
     port = int(state.get("port") or DEFAULT_PORT)
-    if _health(port) is None:
+    health = _health(port)
+    if health is None:
         _note(f"the server recorded on port {port} does not answer — run `coltman-images start`")
         return EXIT_SERVER_UNAVAILABLE
+
+    # A request carries no model (protocol section 4.1), so this command cannot
+    # select one: the server serves the entry it booted. What `--model` and
+    # `--entry` let the caller do is *say which model it believes it is talking
+    # to*, and be refused when it is wrong — otherwise a typo would silently
+    # render with another model. Absent both, nothing is resolved or compared.
+    if args.model is not None:
+        try:
+            _model_path(args.model)
+        except _EntryUnreadable as exc:
+            _note(f"--model {args.model}: {exc}")
+            return EXIT_ASSET_MISSING
+        served = health.get("model")
+        if args.model != served:
+            _note(
+                f"--model {args.model}: the running server is serving {served!r} — stop it and "
+                "start it with --model to change the model; this request was not sent"
+            )
+            return EXIT_INVALID_REQUEST
+    elif args.entry is not None:
+        entry_path = _entry_path(args.entry)
+        if not entry_path.is_file():
+            _note(f"--entry {entry_path}: no such entry file")
+            return EXIT_ASSET_MISSING
+        try:
+            expected = _entry_id(entry_path)
+        except _EntryUnreadable as exc:
+            _note(f"--entry {entry_path}: {exc}")
+            return EXIT_ASSET_MISSING
+        served = health.get("model")
+        if expected != served:
+            _note(
+                f"--entry {entry_path}: that entry declares {expected!r}, and the running "
+                f"server is serving {served!r} — stop it and start it with --entry to change "
+                "the model; this request was not sent"
+            )
+            return EXIT_INVALID_REQUEST
 
     payload: dict[str, object] = {"prompt": args.prompt}
     if args.seed is not None:
@@ -487,6 +647,25 @@ def build_parser() -> argparse.ArgumentParser:
     start = commands.add_parser("start", help="start the server and wait until it is warm")
     start.add_argument("--port", type=int, default=None, help=f"loopback port (default {DEFAULT_PORT})")
     start.add_argument(
+        "--model",
+        default=None,
+        metavar="ID",
+        help=(
+            "the entry to serve, by its id (default: the promoted entry at "
+            f"{DEFAULT_ENTRY.relative_to(ROOT)}); resolved across model/entry.yaml and "
+            "model/entries/*.yaml"
+        ),
+    )
+    start.add_argument(
+        "--entry",
+        default=None,
+        metavar="PATH",
+        help=(
+            "the entry file to serve — a development shortcut that skips the id "
+            "resolution; prefer --model"
+        ),
+    )
+    start.add_argument(
         "--foreground",
         action="store_true",
         help="keep the server attached to this terminal instead of backgrounding it",
@@ -533,6 +712,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="permit the declared stage to synthesize the pixels above the native ceiling",
     )
     generate.add_argument("--json", action="store_true", help="print the whole response object")
+    generate.add_argument(
+        "--model",
+        default=None,
+        metavar="ID",
+        help=(
+            "the entry id you expect the running server to be serving; a mismatch is refused "
+            "with the id it is actually serving. Absent: no check, because a request names no model"
+        ),
+    )
+    generate.add_argument(
+        "--entry",
+        default=None,
+        metavar="PATH",
+        help=(
+            "the entry file you expect the running server to be serving — a development "
+            "shortcut; prefer --model. Absent: no check"
+        ),
+    )
     generate.set_defaults(handler=cmd_generate)
 
     stop = commands.add_parser("stop", help="stop the server and release the card")
@@ -548,6 +745,10 @@ def main(argv: list[str] | None = None) -> int:
         # A port for a page nobody asked for is a usage error, not a silent
         # no-op: the flag would otherwise look like it did something (section 7).
         parser.error("--ui-port needs --ui — the page is only served when it is asked for")
+    if getattr(args, "model", None) is not None and getattr(args, "entry", None) is not None:
+        # Two ways to name one choice, not two choices: --model is the mechanism
+        # and --entry the development shortcut (protocol section 5.1).
+        parser.error("--model and --entry are two ways to name one entry — pass one, not both")
     return args.handler(args)
 
 

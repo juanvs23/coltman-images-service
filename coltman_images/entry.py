@@ -1,8 +1,14 @@
 """The model entry: resolve it, validate it, and hand it to every component.
 
-This module is the only reader of `model/entry.yaml`. Nothing else in the
-system reads a path, a step count, a guidance value or a census from anywhere
-but the object this module returns (protocol section 9, rule 7).
+This module is the only reader of the entries — `model/entry.yaml` and every
+`model/entries/*.yaml`. Nothing else in the system reads a path, a step count, a
+guidance value or a census from anywhere but the object this module returns
+(protocol section 9, rule 7).
+
+An entry is chosen by its `id`: `find_entry` scans the promoted entry and the
+entries directory, matches one `id`, and hands the file to `load_entry`. The id
+is the model's alias on the command line (protocol sections 5.1 and 6.1), and
+`--entry PATH` remains the development shortcut that skips the scan.
 
 It validates the envelope and the shape, never the model. `components` is a map
 of names the entry chooses to paths that must exist; `digests` pins whichever of
@@ -28,6 +34,8 @@ import yaml
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_ENTRY = PROJECT_ROOT / "model" / "entry.yaml"
+ENTRIES_DIR = PROJECT_ROOT / "model" / "entries"
+"""Where the other entries live (protocol sections 3 and 6.1)."""
 
 # The closed request vocabulary (protocol section 4.1). An entry declares the
 # subset it accepts; nothing outside this tuple is ever a valid field.
@@ -255,6 +263,69 @@ def _verify_digests(declared: Any, components: Components) -> None:
             raise _refuse(
                 f"digests.{name}: mismatch — entry says {digest[7:19]}…, file is {actual[:12]}…"
             )
+
+
+def entry_files() -> list[pathlib.Path]:
+    """Every entry file the alias scan reads: the promoted entry, then `model/entries/`.
+
+    `model/entry.yaml` comes first because it is the promoted default, and the
+    directory is read in sorted order so the same tree resolves the same way on
+    every boot.
+    """
+    files: list[pathlib.Path] = []
+    if DEFAULT_ENTRY.is_file():
+        files.append(DEFAULT_ENTRY)
+    if ENTRIES_DIR.is_dir():
+        files.extend(sorted(ENTRIES_DIR.glob("*.yaml")))
+    return files
+
+
+def declared_id(path: pathlib.Path) -> str | None:
+    """The `id` an entry file declares, or None when it is not readable as one.
+
+    This is deliberately not `load_entry`: resolution must not hash a 6 GB
+    checkpoint, and an entry the caller did not select has no say over this boot
+    (protocol section 6.1) — a missing asset in another entry refuses only when
+    that entry is selected. The selected file is validated in full by
+    `load_entry`.
+    """
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("id")
+    return value if isinstance(value, str) and value else None
+
+
+def available_ids() -> list[str]:
+    """Every alias this tree declares, sorted."""
+    found = {entry_id for entry_id in (declared_id(path) for path in entry_files()) if entry_id}
+    return sorted(found)
+
+
+def find_entry(alias: str) -> pathlib.Path:
+    """The entry file whose `id` is `alias`; refuses with the ids this tree has.
+
+    The same refusal `load_adapter` makes for an unknown adapter: the caller
+    named something this system does not have, and the message lists what it
+    does have. One id, one entry — two files declaring the same id are a defect
+    this refuses rather than resolves by order.
+    """
+    if not isinstance(alias, str) or not alias:
+        raise _refuse(f"model: expected a non-empty entry id, got {alias!r}")
+    matches = [path for path in entry_files() if declared_id(path) == alias]
+    if not matches:
+        known = ", ".join(available_ids()) or "none"
+        raise _refuse(
+            f"model: this system has no entry with id {alias!r} (known ids: {known}); "
+            "entries live at model/entry.yaml and model/entries/*.yaml"
+        )
+    if len(matches) > 1:
+        where = ", ".join(str(path.relative_to(PROJECT_ROOT)) for path in matches)
+        raise _refuse(f"model: id {alias!r} is declared by more than one entry ({where}); one id, one entry")
+    return matches[0]
 
 
 def load_entry(path: str | pathlib.Path | None = None) -> Entry:
