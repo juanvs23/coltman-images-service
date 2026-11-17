@@ -27,5 +27,6 @@ The absolute paths these records were written with have been replaced by placeho
 | `steps-ladder.md` | the nine-step range measured over five seeds on a hostile prompt: the time curve, the SSIM convergence, and where the ceiling actually is |
 | `steps-fidelity.md` | the same ladder read per seed: the timing variance, the SSIM per seed, and the divergence that grows with the step count — and no quality verdict |
 | `flux2-klein.md` | the second model on two runtimes, one of them removed on 2026-11-17: the cost table, what this tree measured through the service, why the diffusers path went, the seed-does-not-travel finding, the blind comparison and its imbalance, the quality defects of both paths, the step-and-size ladder of 2026-11-17 with the sampler and flow-shift sweep, the lock under contention, and the AdaLN half-swap |
+| `lora-catalog.md` | what a LoRA is, the measured ladder of 2026-11-17 from zero to sixteen selections with time and device peak, the rules this project adopted (ownership by folder, alias scoping, a budget in MiB, the runtime patch), and what each of the three LoRAs in the tree does |
 
 `upstream/` holds the vendor cards and the official README, with its own README extracting what they add.
