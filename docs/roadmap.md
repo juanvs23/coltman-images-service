@@ -2,7 +2,9 @@
 
 ## Next step
 
-**P10 — the second adapter, DreamShaper XL — and it cannot start: B3 is open.** P9 closed on 2026-11-16. `start --ui` serves a page from the same process and the same queue: the page produced this project's own baseline bytes — `a lighthouse at dusk`, seed 7, 1280×720, `sha256 ff3b84a0…` — two submissions fired **through the page** serialise at **1.997** (first status within 0.1 s of each click), the screen states SD or HD with the base the stage started from, the census and the three timings, and guard 13 holds the page to the seam. A `--ui` boot writes no `https://` line at all. The suite is green — `Ran 17 tests in 822.983 s`, `OK`.
+**The second model now has one runtime, by the operator's ruling of 2026-11-17; what comes next is P10's blocker, not this.** FLUX.2 [klein] 4B was brought into the tree on 2026-11-16 through two runtimes — the official scaled-FP8 checkpoint on diffusers, the community Q4_K_M GGUF on a vendored `ggml` binary — and measured through the service. On 2026-11-17 the operator removed the diffusers runtime and its assets, and the measurements behind the removal are the ones that matter here: whole, the two runtimes cost **167.5 s against 22.4 s** of wall, **5745 against 4305 MiB** of device peak and **10280 against 6349 MiB** of whole-process-tree RSS, removed path first, and the removed path's peak was its text encoder rather than its renderer. **11,569 MiB** were freed. One adapter and one entry remain (`flux2klein_sd`), and on 2026-11-17 the operator promoted it: **`model/entry.yaml` is FLUX.2 [klein]'s entry**, Z-Image's moved unchanged to `model/entries/zimage.yaml`, and the served entry is chosen by alias (`start --model <id>`). The entry now declares eight steps (range 4..8, measured at 10.8 / 14.1 / 16.9 s at 4 / 6 / 8, and eight repairs the four-step occlusion defect), a ceiling of 1152² (measured at 13.4 s, 4701 MiB) and 1152×1152 defaults. The blind comparison that informed the ruling is recorded as a limitation, not a clean result — the shuffle put the same arm on the same side of all five sheets — and `docs/reference/flux2-klein.md` carries the numbers, the three verified defects of the removed path and the one defect of the survivor.
+
+Behind that, **P10 — the second adapter, DreamShaper XL — cannot start: B3 is open.** P9 closed on 2026-11-16. `start --ui` serves a page from the same process and the same queue: the page produced this project's own baseline bytes — `a lighthouse at dusk`, seed 7, 1280×720, `sha256 ff3b84a0…` — two submissions fired **through the page** serialise at **1.997** (first status within 0.1 s of each click), the screen states SD or HD with the base the stage started from, the census and the three timings, and guard 13 holds the page to the seam. A `--ui` boot writes no `https://` line at all. The suite is green — `Ran 17 tests in 822.983 s`, `OK`.
 
 What stands between here and P10 is not code. B3 is the checkpoint plus its sidecars, and the three answers its row lists — the variant, the regime the entry declares, and D2 alone. The operator's order of 2026-11-16 stands: build the UI first and test a new model through it once it works. The UI now works.
 
@@ -13,7 +15,7 @@ No phase may start before the previous one has an **observed** exit: a command w
 A blocker is a prerequisite that lives outside a phase and stops it at its first
 step. They go **first, in this order**, and a phase whose blockers are open does
 not start: P9 cannot be built while B1 and B2 are open, P10 cannot be built while
-B3 is open, and U3 cannot be coded while B4 is open. Clearing a blocker is
+B3 is open, and U3 waited on B4 until it cleared on 2026-11-17. Clearing a blocker is
 finished when its exit criterion is an observed command, the same rule the phases
 follow.
 
@@ -22,7 +24,7 @@ follow.
 | **B1** | **The submission seam — cleared 2026-11-16.** `WarmServer.submit(request)` owns validation, the plan, the enqueue and the wait, returns the section 4.2 object, and refuses with `InvalidRequest` / `ServerError` / `RenderFailed`; the handler only parses and maps. Declared in protocol section 9 rule 8 (one producer). Proof: `sha256 0065c34a…` for `a lighthouse at dusk`, seed 7, 512×512, identical to the pre-extraction baseline, and the suite green at sixteen methods. | P9 | An extraction, not a design — the validation, the plan, the enqueue and the wait move behind one callable on `WarmServer`. | `POST /generate` calls `submit()`; the suite is green; the recorded baseline is byte-identical (`sha256 0065c34a…`, `a lighthouse at dusk`, seed 7, 512×512). |
 | **B2** | **The dependency — cleared 2026-11-16.** `gradio` 6.32.0 into `.venv` and `requirements.txt`: twenty new packages on a closure of fifty, `fastapi`, `starlette` and `uvicorn` among them, and **nothing already pinned moved** — torch, diffusers, transformers, numpy, pydantic and httpx are exactly what they were. The venv and `requirements.txt` agree pin for pin at 89, with torch outside the file because it comes from the cu130 index. | P9 | — | Observed: `import gradio` answers 6.32.0 under `.venv/bin/python`, `requirements.txt` pins it, the API still serves from `http.server`, the suite is green at sixteen methods, and `docs/context.md`'s sentence was rewritten in the same work unit. |
 | **B3** | **The second model's weights and the sidecars the single file does not carry.** The checkpoint is not in `model/assets/` and not on this machine. The single file does carry the UNet, both CLIP encoders and the VAE — but **no configs and no tokenizers**, and diffusers resolves those from `stabilityai/stable-diffusion-xl-base-1.0` on the Hub when they are not supplied, which protocol section 2 refuses. So the blocker is 6,939,220,250 bytes of checkpoint **plus ~3.2 MB of declared sidecars**: `model_index.json`, `unet/config.json`, `vae/config.json`, the scheduler config, and both tokenizer directories. | P10 | A variant chosen by the operator, then a download of the file and its sidecars from the same pinned commit. | The checkpoint and its sidecars in `model/assets/`, digests recorded and verified against the downloaded bytes, and the format read well enough to say what the adapter must own — a census through that adapter is **P10's** exit, not this one. |
-| **B4** | **D1–D3**, the three operator decisions: where entries live, how the served entry is chosen, and what a non-default entry with a missing asset does. | U3 | The operator's answers, one per line. | Three answers recorded in protocol section 12, and U3's row unblocked. |
+| **B4** | **D1–D3 — cleared 2026-11-17.** The three operator decisions were answered together: **D1** entries live at `model/entry.yaml` (the promoted one) and `model/entries/*.yaml`; **D2** the served entry is chosen by alias — `start --model <id>`, resolving the entry's own `id` across those files — and `--entry PATH` remains as a development shortcut; **D3** an entry the caller did not select is read only for its `id`, so a missing asset in it does not block another entry's boot and refuses only when that entry is selected. The mechanism is declared in protocol sections 5.1, 6.1 and 12, and the CLI refuses an unknown alias with the ids the tree declares. | U3 | — | Observed: `start --model flux2-klein-4b-gguf-q4` and `start --model z-image-turbo-fp8` each boot their entry, `start --model nonexistent` exits 3 listing both ids, and `generate --model` refuses a server serving another entry by naming it. |
 
 ### Deferred behind P9 — the operator's order of 2026-11-16
 
@@ -49,11 +51,10 @@ needed before a download.
 
 1. **The variant**, one line — which of the three, and SFW or general.
 2. **The regime the entry declares** — `guidance` and `steps`. Every candidate's card says `guidance_scale=2` and 4–6
-   steps, against this system's `0.0` and `12`. Choosing 2 makes CFG active, which gives section 4.1's "there is no
-   negative prompt" the qualifier it will then need in the same work unit.
-3. **D2 alone**, to serve the new entry: `start --model <id>`. D1 (where entries live) and D3 (a non-default entry whose
-   asset is missing) belong to U3, and **U3 can wait** — a second model can be *tested* through the UI without a
-   per-request selector, because serving it is a choice made at `start`, not at submission.
+   steps, against Z-Image's `0.0` and `12` (the promoted entry runs `1.0` and `8`). Choosing 2 makes CFG active, which
+   gives section 4.1's "there is no negative prompt" the qualifier it will then need in the same work unit.
+3. **The entry, served by alias** — `start --model <id>`, declared on 2026-11-17 when B4 cleared. Nothing waits on U3:
+   a second model is served by its `id`, and serving it is a choice made at `start`, not at submission.
 4. **B3 then P10**, as their rows declare.
 
 ## Phases
@@ -159,11 +160,157 @@ Three units, written from a read of the code and tracked here so they are not lo
 | --- | --- | --- | --- |
 | **U1** | A neutral entry schema: the law validates the envelope and the shape, the adapter owns the model's names | prerequisite of P10 | **done, 2026-11-15**, guard 14, `d2e9149` |
 | **U2** | `steps` as a request field, with `limits.steps` bounding it | P11 | **done, 2026-11-15**, guard 15, `aa9b2ba` |
-| **U3** | Select a model per request and swap on demand | the promise in §6.1 | **blocked** on D1–D3 below |
+| **U3** | Select a model per request and swap on demand | the promise in §6.1 | **closed, 2026-11-17** — by the operator's ruling, and not as swap-on-demand: the served entry is chosen by alias at `start` (`--model <id>`), and a request names no model (protocol section 4.1) |
 
-U3 needs three operator decisions before any code: where entries live (`model/entries/<id>.yaml`), how the served entry is chosen (`start --model <id>`), and what happens to a non-default entry whose assets are missing — the last one departing from §6.1's "an undeclared asset refuses at start", which is why it is asked rather than assumed.
+U3 needed three operator decisions before any code: where entries live, how the served entry is chosen, and what happens to a non-default entry whose assets are missing. B4 answered all three on 2026-11-17: entries live at `model/entry.yaml` and `model/entries/*.yaml`; the served entry is chosen by its `id` with `start --model`, with `--entry PATH` kept as a development shortcut; and an entry the caller did not select is read only for its `id`, so its missing asset refuses only when it is selected. Per-request selection and swap-on-demand were **not** built, and are not owed: the alias is a boot-time choice, and the card is single, so one model is served at a time.
 
 U1 also found a coupling the brief did not know about: `server.py` formatted its warm-up log line from Z-Image's census keys, so `start` would have failed on a foreign census *after* loading. Fixed in the same unit, and guard 14c now holds the core to the rule the law states.
+
+## The second model: FLUX.2 [klein], one runtime since 2026-11-17
+
+The unit before P10 brought a second model into the tree and measured it through the service, without promoting
+anything. It arrived with two runtimes; the operator removed one on 2026-11-17, and this section records both the
+measurement and the removal.
+
+- **Two adapters, two runtimes, one model — then one.** The diffusers adapter read the official scaled-FP8 checkpoint
+  (309 keys mapped onto 169 parameters, 100 of them `FP8Linear`, the AdaLN halves swapped); `flux2klein_sd` runs the
+  community Q4_K_M GGUF as a subprocess, holding `run/server.lock` for the child's whole life so the binary and the
+  service can never both load a model. The diffusers adapter, its entry and its assets were removed on 2026-11-17.
+  The surviving entry was promoted to `model/entry.yaml` on 2026-11-17.
+- **Measured through the service, 1024², 4 steps, seed 7, the same prompt.** The diffusers path — removed: `render_s`
+  7.054 s against `load_s` 77.947 s (the 8.05 GB encoder on the CPU), 5262 MiB of device memory at the 250 ms
+  sampler's peak, 80.03 s to boot. The `ggml` path: `render_s` 15.508 s, `load_s` 0 because the child's load is not
+  separable from its sampling, 3822 MiB, 11.32 s to boot. Both were deterministic per runtime; the same seed does
+  **not** produce the same still across runtimes (PSNR 10.64 dB), so a cross-runtime comparison had to be judged at the
+  same prompt, not differenced at one seed. Evidence: `tests/e2e/flux2-klein/`, numbers in
+  `docs/reference/flux2-klein.md`.
+- **Why one was removed.** Measured whole at the same request, the diffusers path cost **167.5 s** of wall against
+  **22.4 s**, **5745 MiB** of device peak against **4305**, and **10280 MiB** of whole-process-tree RSS against
+  **6349**; its device peak was the text encoder, not the renderer. The operator's blind read of the five sheets on
+  2026-11-17 put three verified defects on that path — the bartender's body crossing the bar counter, a featureless
+  black figure behind one player in the comic page, and the ice in the glass as an irregular lump rather than a cube.
+  The removal freed **11,569 MiB**. The blind test is recorded as **unbalanced** — the shuffle put the same arm on the
+  same side of all five sheets, so position and quality were confounded — and it is a limitation of the record, not a
+  clean result. The survivor is not flawless either: it writes an illegible scrawl beside the `OPEN` sign its prompt
+  did not ask for.
+- **What the law gained, and what it lost.** Section 2 declares the vendored runtime as a copy inside the tree (it does
+  not widen the kernel exemption); section 3 gains the rows; section 4.1 states that `limits.steps` is the **entry's**
+  range and that a distilled model's step count is its training regime, not a dial; sections 5.1, 6.1, 6.3 and 7
+  declare `--entry` and the adapters; section 11 carries the costs; section 12 carries the rulings and what remains
+  open. On 2026-11-17 the law also lost the removed adapter's row, its entry, its transformer-config copy and the
+  section 12 bullets that described a live capability it no longer has; those bullets are amended, not deleted, and
+  mark what superseded them.
+- **What it left to the operator.** It did not settle how the served entry is chosen (B4/D1–D3), and it did not promote the
+  remaining entry: `model/entry.yaml` was still Z-Image's. Both followed on 2026-11-17 — the alias became the mechanism and
+  klein became the promoted entry.
+
+## The tests of 2026-11-17, in order
+
+Six tests, each with an exit criterion that is an observed command rather than a document. T1 came first because it
+was the only one that could decide the operator's question; T2 came second because it could have changed what T1 was
+comparing.
+
+**T1 — the blind A/B — ran on 2026-11-17, and it is recorded as unbalanced.** The same prompt through both entries,
+1024×1024, 4 steps, five prompts: a neutral scene, one with legible text, one with hands and faces, one with a
+reflective or transparent material, and one the operator picked. **The seed does not travel between the runtimes**
+(PSNR 10.64 dB at one seed, different compositions), so stills were paired at the same prompt and never differenced at
+one seed. The verdict is recorded in `docs/reference/flux2-klein.md` beside the three defects the operator verified in
+the crops. **The shuffle did not do its job**: it put the same arm on the same side of all five sheets, so position and
+quality are confounded and the result is a limitation of the record rather than a clean preference. The ten stills, the
+five sheets and `key.json` are in `tests/e2e/flux2-klein/evidence/blind/`, and the run is not reproducible now that one
+arm's assets are gone.
+
+**T2 — the encoder, which is the whole cost difference and may not need to be.** The diffusers path pays 75–95 s of
+`load_s` because the 8.05 GB Qwen3-4B encoder runs on the CPU. Two questions, in this order:
+
+1. **Is it the same encoder Z-Image already has?** `model/assets/qwen3/` holds `Qwen3ForCausalLM` — hidden size 2560,
+   36 layers, 32 heads with 8 KV heads, vocabulary 151936 — quantized to int8 at 4.41 GB, and FLUX.2's `text_encoder/`
+   is `Qwen3ForCausalLM` at 4.02 B parameters with the same shape. If the weights are the same, the second 8 GB asset
+   is redundant. Exit: a tensor-by-tensor comparison, and the count of what differs if anything does.
+2. **If it fits, encode on the card.** The encoder loads *before* the transformer, so 4.41 GB has the card to itself at
+   that moment. Measured, `zimage` already runs this encoder quantized. Exit: `load_s` for the same request with the
+   encoder on the card against the 77.947 s recorded, and the peak that comes with it. If the encoder has to stay on the
+   CPU, that is the finding and it is written as one.
+
+**T2 ran on 2026-11-17 and closed in the negative — the original encoder stays.** They are the same model: tokenizers
+byte-identical, `embed_tokens` and `norm` bit for bit, all 36 layers at a correlation of 1.0000. Z-Image's int8 copy
+carries a pruned last layer (5770/9728 rows of `layers.35.mlp.up_proj`, 404/2560 of `down_proj`) that FLUX.2 never reads,
+because it conditions on layers 9, 18 and 27. Reuse measured **2.5 s against 95.8 s**, but the embeddings deviate five to
+ten per cent relative, and the RAM does not fall: 5.05 GB today, 5.29 GB with a lazy state dict, out of memory when the
+shell goes to the card first. The encoder is 4.41 GB and has to live somewhere. The operator ruled on 2026-11-17 that the
+official bfloat16 copy is what this system encodes with; the reasoning is in protocol section 12 and the numbers in
+`docs/reference/flux2-klein.md`. What would reopen it is a blind comparison of the two encoders' stills, not run.
+**That ruling is overtaken on 2026-11-17 by the removal of the path it governed**: the bfloat16 copy, the scaled-FP8
+checkpoint and the diffusers adapter were deleted together, so the decision no longer has a subject. The comparison's
+other arm no longer exists and the script that produced it is gone; `tests/e2e/flux2-klein/encoder-parity.json` is kept
+as the record.
+
+**T3 — the step count, measured instead of asserted.** The entry declared `{min: 4, max: 4}` on the vendor's word at the
+time. The
+`ggml` path accepts an arbitrary `--steps`, so it is the one that can be sampled outside the regime: 4, 6 and 8, same
+prompt and seed, three stills each. The claim the law now makes — that moving a distilled model's step count samples
+outside its training regime rather than trading detail for time — is either observed or it is withdrawn from section 4.1.
+Exit: the stills, their timings, and the eye's reading of them.
+
+**T3 ran on 2026-11-17 and closed in the positive, on one prompt and one seed.** At 1024×1024 the three stills cost
+**10.8 s, 14.1 s and 16.9 s** — +31 % for six steps and +56 % for eight — and the device peak is **flat at 3865 MiB**
+because the card holds one quantised pair whatever the sample count. **At four steps the bartender's body is merged into
+the bar counter** — apron and hips on the near face, torso behind — and **at six and eight the occlusion is correct**,
+with the most apron detail at eight; the operator confirmed it on `bartender-crop.png`. The same defect sits in the
+removed path's stills, which were also rendered at four steps, so it is a four-step artefact and not evidence about
+quantisation. The measurement does **not** support the law's sentence as written: moving the step count did not sample a
+useless regime, it repaired a real defect at a measured price. **The ruling was taken on 2026-11-17: klein's entry admits
+4..8 and defaults to 8, and the law's sentence was amended in the same work unit (protocol section 4.1).**
+
+**T4 — the size ladder and where it stops.** 512², 768², 1024², 1152² and 1280×720 on the surviving path, each with its
+peak at the 250 ms sampler and its `render_s`; the removed path's 1024² readings survive as history and cannot be swept
+again. `max_pixels: 1048576` was the operator's measurement for 1024²; what the ceiling should be is whatever this sweep
+shows the card can hold. Exit: the table, and either a confirmation of 1048576 or a corrected entry.
+
+**T4 ran on 2026-11-17 and closed with the ceiling conservative.** 512² 5.3 s / 3221 MiB · 768² 7.5 / 3461 · 1024²
+11.1 / 3865 · **1152² 13.4 s / 4701 MiB** at 1,327,104 px · 1280×720 10.3 / 3761. **1152² is 27 % above the declared
+ceiling and fits**, with **3156 MiB** of the card's 7857 usable still free, and the operator read the ladder's contact
+sheet as the best distribution of figures at the table. The entry was **not** corrected in that unit: `max_pixels` is a
+declaration and raising it was an operator ruling. **That ruling was taken on 2026-11-17: the ceiling is 1327104 and the
+promoted entry defaults to 1152×1152.** The boundary stands: the 1152² row is one prompt, one seed, one square box at
+four steps, and the ceiling is an area, so it also admits wide shapes this ladder never rendered.
+
+**T5 — the lock under real contention.** The `ggml` adapter holds `run/server.lock` for the child's life, but it has only
+been proven against a running server. Try the other directions: a server boot while a bare `sd-cli` holds the card, two
+`generate` calls aimed at the `ggml` entry at once, and a `stop` arriving mid-render. Exit: each attempt either served or
+refused with the holder's pid, and never two models on the card.
+
+**T5 ran on 2026-11-17 and closed with one direction unguarded.** Run through the CLI by
+`tests/e2e/flux2-klein/contention.py`, evidence `evidence/contention/contention.json`, one run per scenario. **Two
+`generate` calls at once:** both `200`, `duration_s` **11.48 s and 23.148 s** — ratio **2.016**, one render behind the
+other with no overlap — and `pgrep -c sd-cli`, sampled 188 times over 25.1 s, **never exceeded 1**. **`stop` mid-render:**
+the child was on the card when `stop` was sent; `stop` exited 0 after **11.4 s** and the request answered `200` with its
+still at `duration_s` 11.168 — the render completed rather than being cut — and afterwards there was no `sd-cli`, no
+`run/server.json` and no held lock. **A fresh `start` against a bare `sd-cli`:** the lock was **free** (the binary never
+takes it), `start` exited 0 and warmed in 13.1 s, **two `sd-cli` processes coexisted** and the device reached **6854 MiB**
+of 8188; both children succeeded. **The finding is that nothing prevents it**: the mutex is a contract between this
+project's processes and not a property of the card, and only `--offload-to-cpu` kept the two inside it — the measured
+resident child (7170 MiB) beside the 512² warm-up (3221 MiB) would need 10,391 MiB. Whether that should change is open.
+The 30 s deadline itself was not reached: no request this entry admits outlasts it.
+
+**T6 — the record after the tests.** Two runs of the remaining entry at the same seed, digest compared; the suite
+re-run; the numbers in `docs/reference/flux2-klein.md` updated with what T1–T5 measured. T6 promoted nothing: the
+promotion was its own unit, with `model/entry.yaml` moved deliberately and the Z-Image baseline still
+the reference — and it followed on the same date, recorded below.
+
+**T6 ran on 2026-11-17 and closed.** Three requests of the poker prompt, 1024², seed 7, four steps, through the
+service returned `sha256 f15222b23879973d…` byte for byte; the lighthouse request of 2026-11-16 reproduced as
+`482d2843418d5d6a…` on 2026-11-17 through a server started on another day. `docs/reference/flux2-klein.md` carries T3,
+T4, the sampler sweep and the flow shift with their boundaries, and this section carried the two rulings the tests left
+open. The suite was green — `Ran 17 tests in 749.665 s`, `OK` — and that unit promoted nothing; the promotion followed on
+the same date, below.
+
+**Two rulings the tests left open, taken by the operator on 2026-11-17.** Both were recorded with their measurement so the decision was a reading and not a guess:
+
+1. **`limits.steps` admits 8 — taken.** T3 measured +56 % of the four-step wall (16.9 s against 10.8 s) and a repaired occlusion at six and eight. klein's entry now declares `{min: 4, max: 8}` with `steps: 8`, bounded above by the largest count measured.
+2. **`max_pixels` is raised — taken.** T4 measured 1,327,104 px at 4701 MiB with 3156 MiB still free, 27 % above the declared ceiling. The ceiling is now `1327104`, and the promoted entry defaults to that box, 1152×1152. The reading rests on one prompt and one seed.
+
+**The promotion and the selection ruling followed on the same date.** `model/entry.yaml` is FLUX.2 [klein]'s entry; Z-Image's moved unchanged to `model/entries/zimage.yaml`. The served entry is chosen by alias — `start --model <id>` — which answers B4's three decisions and closes U3, as the blocker's row and U3's row record.
 
 ## The measurement that is not a guard
 
@@ -209,4 +356,4 @@ accepted no warm VAE. The arithmetic was not duplicated, only the sequencing.
 
 ## Decisions that are not phases
 
-Both decisions that were open are closed. The FP8-against-INT8 quality question was ruled on 2026-11-16: the A/B was run to the end, the INT8 model was discarded and the system has one arm. `steps: 8` was adopted by U2 as a request field bounded by `limits.steps` at 8..16. The decisions that remain open live in `docs/protocol.md` section 12. A second entry is scheduled: the base Z-Image variant will be downloaded later and will serve the higher-quality tier, with its own entry file and its own swap cost — the time to unload, load and warm again. Until its weights exist, one entry serves the system and no request selects a model.
+Both decisions that were open are closed. The FP8-against-INT8 quality question was ruled on 2026-11-16: the A/B was run to the end, the INT8 model was discarded and Z-Image has one arm. `steps` was adopted by U2 as a request field bounded by `limits.steps` — 8..16 on Z-Image's entry, 4..8 on the promoted one. The decisions that remain open live in `docs/protocol.md` section 12. Two entries now exist: `model/entry.yaml` (FLUX.2 [klein], the promoted one) and Z-Image's, moved unchanged to `model/entries/zimage.yaml`. Either is served with `start --model <id>`; `--entry PATH` remains as the development shortcut. The second klein runtime — the official scaled-FP8 checkpoint on diffusers — was removed on 2026-11-17 with its assets. The base Z-Image variant remains scheduled as a later, higher-quality tier with its own entry file and its own boot cost; no request selects a model, and a change of model is still `stop` and `start`.

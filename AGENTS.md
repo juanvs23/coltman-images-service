@@ -28,8 +28,12 @@ All commands below are built and exercised by the test matrix.
 | Command | Purpose | State |
 | --- | --- | --- |
 | `coltman-images start` | power on and warm up | built |
+| `coltman-images start --model ID` | serve the entry whose `id` is `ID`, resolved across `model/entry.yaml` and `model/entries/*.yaml` — the mechanism (protocol section 5.1) | built |
+| `coltman-images start --entry PATH` | serve an entry file directly — the development shortcut that skips the id resolution | built |
 | `coltman-images start --ui [--ui-port N]` | power on, warm up, and serve the page beside the API | built |
 | `coltman-images generate --prompt "..."` | render one still and print its path | built |
+| `coltman-images generate --model ID` | render, refusing when the server serves another entry and naming the id it serves | built |
+| `coltman-images generate --entry PATH` | render, refusing when the server serves another entry — the development shortcut | built |
 | `coltman-images stop` | graceful shutdown | built |
 | `.venv/bin/python -m unittest discover -s tests -v` | run the test matrix | built |
 

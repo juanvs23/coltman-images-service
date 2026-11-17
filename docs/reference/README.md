@@ -1,6 +1,6 @@
 # Reference material
 
-These files are the measurements the project's cost model is built on. The first two were produced before this project existed and were copied here so the numbers travel with the system instead of living outside it; the ladder and its per-seed reading were measured here.
+These files are the measurements the project's cost model is built on. The first two were produced before this project existed and were copied here so the numbers travel with the system instead of living outside it; the ladder and its per-seed reading were measured here, and so was the second model's record.
 
 They are **evidence, not law**. `docs/protocol.md` is the law. Where a file here and the law disagree, the law wins — and the law cites these numbers, so a disagreement is a defect in the law or in its citation, never permission to change the law silently.
 
@@ -26,5 +26,6 @@ The absolute paths these records were written with have been replaced by placeho
 | `zimage-fp8-vs-int8.md` | the A/B between both quantization arms, the blind quality adjudication, and both checkpoints' header censuses |
 | `steps-ladder.md` | the nine-step range measured over five seeds on a hostile prompt: the time curve, the SSIM convergence, and where the ceiling actually is |
 | `steps-fidelity.md` | the same ladder read per seed: the timing variance, the SSIM per seed, and the divergence that grows with the step count — and no quality verdict |
+| `flux2-klein.md` | the second model on two runtimes, one of them removed on 2026-11-17: the cost table, what this tree measured through the service, why the diffusers path went, the seed-does-not-travel finding, the blind comparison and its imbalance, the quality defects of both paths, the step-and-size ladder of 2026-11-17 with the sampler and flow-shift sweep, the lock under contention, and the AdaLN half-swap |
 
 `upstream/` holds the vendor cards and the official README, with its own README extracting what they add.

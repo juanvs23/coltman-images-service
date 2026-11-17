@@ -6,9 +6,10 @@ serve requests, shut down. It exposes a loopback HTTP API, and the CLI is that
 API's first client — it contains no rendering of its own.
 
 It is **not** a wrapper around one model. The core is model-agnostic; Z-Image is
-the first adapter behind it, and the declared upscale stage serves every entry.
-`docs/protocol.md` is the law that says what is true here; this file says how to
-use it.
+the first adapter behind it, FLUX.2 [klein] the second (through the vendored
+`ggml` runtime), and the declared upscale stage serves every
+entry. `docs/protocol.md` is the law that says what is true here; this file says
+how to use it.
 
 ## What you need
 
@@ -19,13 +20,13 @@ use it.
 - ~12 GB of RAM free: the weights live in the page cache between requests, and
   that is what makes the second request cheaper than the first.
 
-The service reads **only its own tree** — the code, `model/entry.yaml`,
-`model/assets/` and its own `.venv`. It never reads another project.
+The service reads **only its own tree** — the code, the entries, `model/assets/`,
+its own `.venv` and the vendored `ggml` runtime. It never reads another project.
 
 ## Install
 
 A fresh clone carries the code and the law. It does **not** carry the weights,
-because 10 GB belongs in a model store and not in git. `model/assets/` is
+because 16 GB belongs in a model store and not in git. `model/assets/` is
 declared by the entry and shipped separately.
 
 ```bash
@@ -37,14 +38,23 @@ uv pip install --python .venv/bin/python \
   --index-url https://download.pytorch.org/whl/cu130 "torch==2.13.0+cu130"
 uv pip install --python .venv/bin/python -r requirements.txt
 
-# 2. the assets, at the paths model/entry.yaml declares
+# 2. Z-Image's assets, at the paths model/entries/zimage.yaml declares
 #      model/assets/checkpoint.safetensors      the FP8 transformer, 6.29 GB
 #      model/assets/vae.safetensors
 #      model/assets/vae_config.json
 #      model/assets/scheduler_config.json
 #      model/assets/qwen3/                      the Qwen3 text encoder directory
 #      model/assets/upscaler/realesrgan_x2plus.pth
-#    model/z_image.json is tracked (473 bytes) and pinned by digest in the entry.
+#    model/z_image.json is tracked (473 bytes) and pinned by digest in that entry.
+
+# 2b. the promoted model's assets, at the paths model/entry.yaml declares
+#      model/assets/flux2-klein/gguf/      the Q4_K_M diffusion model and Qwen3 encoder
+#      model/assets/flux2-klein/official/vae/diffusion_pytorch_model.safetensors
+#    The ggml runtime is built, not committed: vendor/stable-diffusion.cpp at
+#    commit 532d2c1, and the entry pins the binary's digest (protocol section 2).
+#    FLUX.2 [klein]'s second runtime (the official scaled-FP8 checkpoint read by
+#    diffusers) was removed on 2026-11-17 with its assets and its entry; the
+#    numbers behind that removal are in docs/reference/flux2-klein.md.
 
 # 3. prove it
 .venv/bin/python -m unittest discover -s tests -v      # ten to fifteen minutes
@@ -63,6 +73,28 @@ coltman-images start                          # loads, warms up, binds 127.0.0.1
 coltman-images generate --prompt "a lighthouse at dusk"
 coltman-images stop
 ```
+
+`start --model ID` serves an entry by its `id`. Two exist: the promoted default,
+FLUX.2 [klein] (`flux2-klein-4b-gguf-q4`, on the vendored `ggml` runtime), and
+Z-Image Turbo FP8 (`z-image-turbo-fp8`), preserved unchanged:
+
+```bash
+coltman-images start --model flux2-klein-4b-gguf-q4
+coltman-images generate --prompt "a lighthouse at dusk" --seed 7 --width 1024 --height 1024 --json
+coltman-images stop
+
+coltman-images start --model z-image-turbo-fp8
+coltman-images generate --prompt "a lighthouse at dusk" --seed 7
+coltman-images stop
+```
+
+An unknown id is refused with the ids the tree declares. Two entries coexist and
+one model is served at a time, because the card is single: changing the model is
+`stop` and `start` again. On `generate`, `--model` is a check, not a selector: it
+says which entry you believe the server is serving and is refused if it is
+another, because a request names no model. Without either flag, `start` serves
+`model/entry.yaml`, the promoted entry. `--entry PATH` is a **development
+shortcut** that names the entry file directly; prefer `--model`.
 
 `start` can also hand the server a deadline for itself:
 
@@ -86,8 +118,8 @@ It never starts a server by itself: if none is running it exits 4 and says so.
 | --- | --- |
 | `--prompt "..."` | required; the text to render |
 | `--seed N` | absent: the server picks one and returns it in `--json` |
-| `--width N` / `--height N` | absent: the entry's defaults, 1280×720 |
-| `--steps N` | absent: the entry's default, 12; the server refuses a value outside the entry's range, 8–16 |
+| `--width N` / `--height N` | absent: the entry's defaults (1152×1152 on the promoted entry, 1280×720 on Z-Image's) |
+| `--steps N` | absent: the entry's default (8 on the promoted entry, 12 on Z-Image's); the server refuses a value outside the entry's range (4–8, or 8–16) |
 | `--out PATH` | absolute path; absent: `out/` with `<UTC>-<seed>.png` |
 | `--upscale` | permit the declared stage when the size exceeds the native ceiling |
 | `--json` | print the whole response object instead of the path |
@@ -97,7 +129,7 @@ It never starts a server by itself: if none is running it exits 4 and says so.
 A request that fits the render ceiling gets exactly what the model rendered:
 
 ```bash
-coltman-images generate --prompt "a lighthouse at dusk"                    # 1280×720
+coltman-images generate --prompt "a lighthouse at dusk"                    # 1152×1152
 ```
 
 Anything larger needs the stage's permission, because the pixels above the
@@ -133,20 +165,22 @@ and every box is the largest at that shape inside the entry's ceiling (or, for H
 inside what the declared stage can serve). The status line sits at the top of the
 right half, where you are looking while a request runs.
 
-The five shapes, and what each gives on this entry:
+The five shapes, and what each gives on the promoted entry:
 
 | Shape | SD | HD |
 | --- | --- | --- |
-| `16:9` | 1280×720 | 2560×1440 |
-| `1:1` | 960×960 | 1920×1920 |
-| `4:3` | 1088×816 | 2176×1632 |
-| `3:4` | 816×1088 | 1632×2176 |
-| `9:16` | 720×1280 | 1440×2560 |
+| `16:9` | 1536×864 | 3072×1728 |
+| `1:1` | 1152×1152 | 2304×2304 |
+| `4:3` | 1280×960 | 2624×1968 |
+| `3:4` | 960×1280 | 1968×2624 |
+| `9:16` | 864×1536 | 1728×3072 |
 
-`16:9`, `1:1` and `9:16` reach the ceiling exactly. `4:3` cannot: its next step up
-with both sides on the 16 grid is 1152×864, 73,728 px over `max_pixels`, so it
-stops one step lower — which is the reason the page offers a list of shapes rather
-than two free width/height fields, where you could ask for a size the card refuses.
+`16:9`, `1:1` and `9:16` reach the ceiling exactly — 1,327,104 px each. `4:3`
+cannot: its next step up with both sides on the 16 grid is 1344×1008, 27,648 px
+over `max_pixels`, so it stops at 1280×960 — which is the reason the page offers a
+list of shapes rather than two free width/height fields, where you could ask for a
+size the card refuses. On Z-Image's entry the same computation yields a different
+ten boxes, because the ceiling and the defaults are the entry's.
 
 Every control also says what it does: one line under it, and a collapsed **what
 each control does** guide at the foot of the form with the detail — including the
@@ -180,9 +214,11 @@ cache under `run/ui/`, and `stop` takes the page down with the process.
 
 | Request | Measured |
 | --- | --- |
-| 1280×720, 12 steps | ~46 s (43.5 s of render, ~2.6 s of load) |
-| 2560×1440 via the stage | ~52 s (the same render plus ~4.6 s of stage) |
-| boot (`start`) | ~20 s, of which ~11 s is the discarded 512×512 warm-up — and the 15.1 s it spends on the server side is the floor `--idle-timeout` is refused below |
+| Z-Image, 1280×720, 12 steps | ~46 s (43.5 s of render, ~2.6 s of load) |
+| Z-Image, 2560×1440 via the stage | ~52 s (the same render plus ~4.6 s of stage) |
+| FLUX.2 [klein], 1024², 4 steps, through the service | 15.5 s of `render_s`; `load_s` is 0 by declaration, because the child loads, samples and exits in one call |
+| FLUX.2 [klein], 1152², 4 steps, the child's own wall | 13.4 s, 4701 MiB — one prompt, one seed |
+| boot (`start`) | Z-Image ~20 s, of which ~11 s is the discarded 512×512 warm-up; FLUX.2 [klein] ~11.3 s. The 15.1 s the server spends on Z-Image's side is the floor `--idle-timeout` is refused below |
 
 There is **no per-request timeout**: a render runs until it finishes, and `stop`
 is the only abort. The queue never refuses a request; it serialises them,
@@ -267,14 +303,14 @@ committed `README.md` and a gitignored `evidence/` folder.
 says so, clears the file and asks you to start again. Nothing is repaired
 implicitly.
 
-**`census ... no Float8 weights`.** The checkpoint at `model/assets/` is not the
-one the entry declares, or it failed to load as FP8. Nothing else in the system
-fails this quietly.
+**`census ... no Float8 weights`.** On Z-Image's entry, the checkpoint at
+`model/assets/` is not the one the entry declares, or it failed to load as FP8.
+Nothing else in the system fails this quietly.
 
-**Out of memory at 1280×720.** The card keeps ~1.1 GiB of slack. A desktop or a
-second process taking a gigabyte will break the render; the service does not
-retry into a smaller size, because that would silently change what you asked
-for.
+**Out of memory at the top of the range.** Z-Image at 1280×720 keeps ~1.1 GiB of
+slack; FLUX.2 [klein] at 1152² keeps 3156 MiB of the card's 7857 usable. A desktop
+or a second process can take either margin away, and the service does not retry
+into a smaller size, because that would silently change what you asked for.
 
 **`2560×1440 is ... above the ... px` with `upscale` missing.** That size is
 above the native ceiling. Either ask for a size that fits, or pass `--upscale`
