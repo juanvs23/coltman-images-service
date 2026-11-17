@@ -1,0 +1,37 @@
+--- a/src/name_conversion.cpp
++++ b/src/name_conversion.cpp
+@@ -695,6 +695,13 @@
+             flux_name_map[block_prefix + "ff_context.net.0.proj.bias"]   = dst_prefix + "txt_mlp.0.bias";
+             flux_name_map[block_prefix + "ff_context.net.2.weight"]      = dst_prefix + "txt_mlp.2.weight";
+             flux_name_map[block_prefix + "ff_context.net.2.bias"]        = dst_prefix + "txt_mlp.2.bias";
++            // FLUX.2 diffusers naming: the two MLPs are two projections, not a
++            // Sequential. Without these the converter drops the whole MLP half
++            // of any FLUX.2 LoRA and reports the tensors as unused.
++            flux_name_map[block_prefix + "ff.linear_in.weight"]          = dst_prefix + "img_mlp.0.weight";
++            flux_name_map[block_prefix + "ff.linear_out.weight"]         = dst_prefix + "img_mlp.2.weight";
++            flux_name_map[block_prefix + "ff_context.linear_in.weight"]  = dst_prefix + "txt_mlp.0.weight";
++            flux_name_map[block_prefix + "ff_context.linear_out.weight"] = dst_prefix + "txt_mlp.2.weight";
+ 
+             // output projections
+             flux_name_map[block_prefix + "attn.to_out.0.weight"]   = dst_prefix + "img_attn.proj.weight";
+@@ -725,6 +732,8 @@
+             // Comfy-Org/LongCat-Image stores already-converted RMSNorm tensors as *.weight.
+             flux_name_map[dst_prefix + "norm.query_norm.weight"] = dst_prefix + "norm.query_norm.scale";
+             flux_name_map[dst_prefix + "norm.key_norm.weight"]   = dst_prefix + "norm.key_norm.scale";
++            // FLUX.2 diffusers naming: qkv and the MLP share one fused projection.
++            flux_name_map[block_prefix + "attn.to_qkv_mlp_proj.weight"] = dst_prefix + "linear1.weight";
+             flux_name_map[block_prefix + "proj_out.weight"]      = dst_prefix + "linear2.weight";
+             flux_name_map[block_prefix + "proj_out.bias"]        = dst_prefix + "linear2.bias";
+         }
+@@ -733,6 +742,11 @@
+         flux_name_map["proj_out.weight"]        = "final_layer.linear.weight";
+         flux_name_map["proj_out.bias"]          = "final_layer.linear.bias";
+         flux_name_map["norm_out.linear.weight"] = "final_layer.adaLN_modulation.1.weight";
++        // FLUX.2 naming: the single-stream modulation keeps the BFL spelling.
++        flux_name_map["single_stream_modulation.linear.weight"] = "single_stream_modulation.lin.weight";
++        // FLUX.2 naming: both double-stream modulations keep the BFL spelling too.
++        flux_name_map["double_stream_modulation_img.linear.weight"] = "double_stream_modulation_img.lin.weight";
++        flux_name_map["double_stream_modulation_txt.linear.weight"] = "double_stream_modulation_txt.lin.weight";
+         flux_name_map["norm_out.linear.bias"]   = "final_layer.adaLN_modulation.1.bias";
+     }
+ 
