@@ -45,3 +45,32 @@ vram_mib: 7857
 # returns 3254 MiB, which is what lets the child fit beside the operator's
 # desktop. `false` leaves the flag out and keeps the quantised pair resident.
 offload: true
+
+# How much device memory this deployment dedicates to the LoRAs a request names,
+# in MiB. A budget and not a count: a 76 MB LoRA and a 325 MB LoRA are not one
+# unit each, so the door sums the requested LoRAs' **file sizes** — measured with
+# `stat` when the entry is resolved — against this number (protocol sections 6.1
+# and 11).
+#
+# 3200 is chosen with margin, and it is not a measured cliff. The three numbers
+# it is reasoned from, all measured on this card:
+#
+#   * the render's own peak is 4815 MiB at the default box and step count
+#     (1152x1152, eight steps, 28.693 s);
+#   * the card reports 7857 MiB usable;
+#   * and the runtime plateaus at ~7.6 GB with LoRAs loaded from twelve selections
+#     onward, which is where it stops growing and starts paying in time instead.
+#
+# 3200 leaves the render untouched, keeps the whole arrangement under what the
+# card reports, and stays clear of the plateau — the honest ceiling with margin,
+# not an edge anything was measured at. What the card does per MiB is the
+# measurement behind it: a 325 MB LoRA costs **+313 MiB of device memory and
+# +1.5 s**, linear to eleven selections, and from twelve the memory plateaus while
+# the wall time doubles (23.6 s at 11, 39.9 s at 12, 51.0 s at 16); nothing runs out
+# of memory up to sixteen. A LoRA's file size slightly under-counts what it costs
+# on the card (310 MiB of file against 313 MiB of device memory for that one), so
+# this budget is a shade permissive rather than optimistic.
+#
+# What is not measured: whether several LoRAs interfere with each other's effect
+# on a still, and why the plateau exists. Protocol section 12 keeps both open.
+lora_budget_mib: 3200

@@ -17,8 +17,16 @@ counts whose meaning belongs to the adapter. Which names an adapter needs is the
 adapter's own declaration (protocol section 6.3) and this module never learns
 one of them.
 
+`loras` is the entry's **catalog**: the LoRAs this model may be asked for, under
+aliases the caller uses and this entry owns (protocol section 6.1). A catalog is
+per model — an entry without one accepts no LoRA at all — and a request names an
+alias, never a path (section 4.1). What an alias is *applied* by, and in which
+syntax, is the adapter's business (section 6.3); this module resolves aliases to
+declared files and their weights, and knows no tag.
+
 Asset paths are relative to the project root; an absolute path is allowed only
-when the asset lives outside the tree (protocol section 6.1).
+when the asset lives outside the tree (protocol section 6.1) — except a LoRA,
+which lives inside the tree by declaration (section 6.1).
 """
 
 from __future__ import annotations
@@ -37,12 +45,47 @@ DEFAULT_ENTRY = PROJECT_ROOT / "model" / "entry.yaml"
 ENTRIES_DIR = PROJECT_ROOT / "model" / "entries"
 """Where the other entries live (protocol sections 3 and 6.1)."""
 
+LORAS_DIR = PROJECT_ROOT / "model" / "assets" / "loras"
+"""Where a model's LoRAs live: one folder per entry, named by its `id` (section 3).
+
+Each model owns its LoRAs. That is not because a LoRA cannot be reused — a LoRA
+whose base architecture matches will usually work on another checkpoint of that
+architecture — but because **there is no certainty of it**: two checkpoints can
+share a family and a module tree and still disagree, and a LoRA that silently
+applies nothing is worse than one that is refused. Ownership by folder makes the
+uncertainty visible: a LoRA verified on a second model is **copied** into that
+model's folder, never shared by path (section 6.1).
+"""
+
 # The closed request vocabulary (protocol section 4.1). An entry declares the
 # subset it accepts; nothing outside this tuple is ever a valid field.
-VOCABULARY = ("prompt", "seed", "width", "height", "out", "steps", "upscale")
+VOCABULARY = ("prompt", "seed", "width", "height", "out", "steps", "upscale", "lora")
 
-# The envelope every entry carries. `digests` is the one optional field: an
-# entry pins the components it wants pinned and nothing forces it to pin one.
+LORA_BUDGET_MIB = 3443
+"""The device-memory budget a request's LoRAs may fill when no host declares one.
+
+The constraint is memory, not a count: a 76 MB LoRA and a 325 MB LoRA are not one
+unit each. Measured on this card on 2026-11-17, 512x512, eight steps, one 325 MB
+LoRA duplicated by hardlink to get distinct paths: **each such LoRA costs +313
+MiB of device memory and +1.5 s, linear to eleven** — 3443 MiB and 23.6 s, which
+is the number below, and why it is what it is. **From twelve the memory plateaus
+at ~7.6 GB and the wall time doubles** (39.9 s at 12, 51.0 s at 16), so past that
+point the runtime stops growing and starts paying in time instead; there is no
+out-of-memory failure anywhere up to sixteen.
+
+This default is a memory, and it is the shadow of the largest count the linear
+arm measured: a deployment that dedicates another amount declares it in
+`host.yaml` (`lora_budget_mib`), and the door sums the requested LoRAs' file
+sizes against that budget. It is declared here, once, because the request
+vocabulary needs it when no host is present; the host reads it as its default.
+"""
+
+MIB = 1 << 20
+"""Bytes in a mebibyte, the unit the budget is declared in."""
+
+# The envelope every entry carries. `digests` and `loras` are the two optional
+# fields: an entry pins the components it wants pinned, and declares a catalog
+# only when its model may be asked for LoRAs.
 _TOP_FIELDS = {
     "id",
     "adapter",
@@ -56,11 +99,16 @@ _TOP_FIELDS = {
     "defaults",
     "warmup",
 }
-_OPTIONAL_TOP_FIELDS = frozenset({"digests"})
+_OPTIONAL_TOP_FIELDS = frozenset({"digests", "loras"})
 _DEFAULT_FIELDS = {"width", "height", "format"}
 _LIMIT_FIELDS = {"max_pixels", "steps"}
 _STEP_LIMIT_FIELDS = {"min", "max"}
 _WARMUP_FIELDS = {"width", "height", "prompt", "seed"}
+_LORA_FIELDS = {"path"}
+_OPTIONAL_LORA_FIELDS = frozenset({"weight"})
+_LORA_HIGH_NOISE_PREFIX = "|high_noise|"
+"""Reserved by the runtime: a selection whose name starts with it is applied to
+the high-noise half of a model. An alias may not start with it."""
 
 
 class EntryError(Exception):
@@ -131,6 +179,132 @@ class Components:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class Lora:
+    """One LoRA this entry declares: its alias, the file, its default weight, its size.
+
+    `alias` is what a request names and `path` is the file that alias resolves
+    to, both declared by the entry (protocol section 6.1). `weight` is the
+    default a request inherits when it names the alias without one. `size_bytes`
+    is the file's own size, measured with `stat` when the entry is resolved — a
+    LoRA's cost is a memory, so the door sums these against the deployment's
+    budget, and the number is the file's so that a LoRA replaced by a bigger one
+    is refused without anyone editing a declaration. How the file is handed to
+    the runtime — a tag, a flag, a directory — is the adapter's (section 6.3),
+    and this object carries no syntax.
+    """
+
+    alias: str
+    path: pathlib.Path
+    weight: float
+    size_bytes: int
+
+    @property
+    def mib(self) -> int:
+        """The file's size in whole MiB, rounded up: what a budget is spent on."""
+        return -(-self.size_bytes // MIB)
+
+
+def _split_lora_item(item: Any) -> tuple[str, float | None]:
+    """`alias` or `alias:weight` -> `(alias, weight or None)`.
+
+    The one parser for the request's `lora` items, so validation and resolution
+    cannot disagree about what an item means. A weight outside `(0, 1]` is
+    refused — including a NaN or an infinity, which fail the comparison — and an
+    alias may not contain `:` because that is the item's own separator.
+    """
+    if not isinstance(item, str) or not item:
+        raise ValueError(f"expected alias or alias:weight, got {item!r}")
+    alias, separator, raw = item.partition(":")
+    if not alias:
+        raise ValueError(f"{item!r}: the alias is empty")
+    if not separator:
+        return alias, None
+    if ":" in raw:
+        raise ValueError(f"{item!r}: expected alias or alias:weight — at most one ':'")
+    try:
+        weight = float(raw)
+    except ValueError:
+        raise ValueError(f"{item!r}: {raw!r} is not a weight") from None
+    if not 0.0 < weight <= 1.0:
+        raise ValueError(f"{item!r}: weight {raw} is outside (0, 1]")
+    return alias, weight
+
+
+def _lora_catalog(declared: Any, entry_id: str) -> dict[str, Lora]:
+    """`loras`: alias -> {path, weight}. A closed set of aliases and fields.
+
+    Every path is relative to the project root, stays **under this entry's own
+    folder** `model/assets/loras/<id>/`, and must exist — a catalog entry is a
+    declared asset like a component, checked at load, before any weight is
+    loaded, so a missing one is exit 3. The folder is the ownership rule and not
+    a convention: a LoRA belongs to the model it was verified on, so a path to
+    another model's folder is refused with both the path and the folder it should
+    have come from (sections 3 and 6.1).
+    """
+    _mapping("loras", declared)
+    if pathlib.PurePosixPath(entry_id).name != entry_id or entry_id in (".", ".."):
+        raise _refuse(
+            f"loras: this entry's id {entry_id!r} names its LoRA folder, so it cannot contain a "
+            "path separator or be a relative step — one id, one folder (protocol sections 3 and 6.1)"
+        )
+    own_folder = LORAS_DIR / entry_id
+    own_relative = own_folder.relative_to(PROJECT_ROOT).as_posix()
+    catalog: dict[str, Lora] = {}
+    for alias, value in declared.items():
+        if not isinstance(alias, str) or not alias:
+            raise _refuse(f"loras: expected alias names, got {alias!r}")
+        if any(character in alias for character in ":>"):
+            raise _refuse(
+                f"loras.{alias}: an alias cannot contain ':' or '>' — the runtime selects a "
+                "LoRA from a prompt with <lora:name:weight>, so those two characters are its own"
+            )
+        if alias.startswith(_LORA_HIGH_NOISE_PREFIX):
+            raise _refuse(
+                f"loras.{alias}: the prefix {_LORA_HIGH_NOISE_PREFIX!r} is reserved by the "
+                "runtime for the high-noise half of a model, so an alias may not start with it"
+            )
+        _exact_keys(f"loras.{alias}", value, _LORA_FIELDS, _OPTIONAL_LORA_FIELDS)
+        raw_path = value["path"]
+        if not isinstance(raw_path, str) or not raw_path:
+            raise _refuse(f"loras.{alias}.path: expected a non-empty string, got {raw_path!r}")
+        if pathlib.Path(raw_path).is_absolute():
+            raise _refuse(
+                f"loras.{alias}.path: expected a path relative to the project root, got "
+                f"{raw_path!r} — a LoRA asset lives inside the tree (protocol section 2)"
+            )
+        path = _resolve(raw_path, f"loras.{alias}.path")
+        resolved = path.resolve()
+        try:
+            inside = resolved.is_relative_to(PROJECT_ROOT)
+        except OSError:
+            inside = False
+        if not inside:
+            raise _refuse(
+                f"loras.{alias}.path: {raw_path!r} resolves outside the project tree — a LoRA "
+                "asset lives inside the tree (protocol section 2)"
+            )
+        if not resolved.is_relative_to(own_folder):
+            raise _refuse(
+                f"loras.{alias}.path: {raw_path!r} is not under {own_relative}/ — a LoRA belongs "
+                f"to the model it was verified on, so entry {entry_id!r} may only name files in "
+                "that folder. Reuse across models is possible but unverified, so a LoRA that "
+                "works on a second model is copied into its folder, never shared by path"
+            )
+        if not path.is_file():
+            raise _refuse(f"loras.{alias}.path: declared asset is missing: {path}")
+        weight = value.get("weight", 1.0)
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            raise _refuse(f"loras.{alias}.weight: expected a number in (0, 1], got {weight!r}")
+        weight = float(weight)
+        if not 0.0 < weight <= 1.0:
+            raise _refuse(f"loras.{alias}.weight: expected a number in (0, 1], got {weight!r}")
+        catalog[alias] = Lora(
+            alias=alias, path=path, weight=weight, size_bytes=path.stat().st_size
+        )
+    return catalog
+
+
 @dataclass(frozen=True)
 class Entry:
     id: str
@@ -146,6 +320,7 @@ class Entry:
     expected_census: dict[str, int] = field(default_factory=dict)
     defaults: dict[str, Any] = field(default_factory=dict)
     warmup: dict[str, Any] = field(default_factory=dict)
+    loras: Mapping[str, Lora] = field(default_factory=dict)
     source: pathlib.Path = DEFAULT_ENTRY
 
     def accepts(self, request: dict[str, Any], limits: Any | None = None) -> list[str]:
@@ -156,14 +331,16 @@ class Entry:
         boot by `coltman_images/host.py`. Absent, the entry's own limits apply,
         which is both the portable case (a tree with no `host.yaml`) and every
         call that predates the host declaration. The object is read for
-        `max_pixels`, `steps_min` and `steps_max` only; the law does not import
-        the host and does not know what else it carries.
+        `max_pixels`, `steps_min`, `steps_max` and `lora_budget_mib` only; the law
+        does not import the host and does not know what else it carries.
         """
         cap = self.max_pixels if limits is None else limits.max_pixels
         steps_min = self.steps_min if limits is None else limits.steps_min
         steps_max = self.steps_max if limits is None else limits.steps_max
+        budget_mib = LORA_BUDGET_MIB if limits is None else limits.lora_budget_mib
         pixels_note = "" if limits is None else limits.pixels_note()
         steps_note = "" if limits is None else limits.steps_note()
+        loras_note = "" if limits is None else limits.loras_note()
 
         problems: list[str] = []
         for key in sorted(request):
@@ -198,6 +375,8 @@ class Entry:
             problems.append("out: expected an absolute path")
         if "upscale" in request and not isinstance(request["upscale"], bool):
             problems.append("upscale: expected true or false")
+        if "lora" in request and "lora" in self.request_fields:
+            problems.extend(self._lora_problems(request["lora"], budget_mib, loras_note))
         width = request.get("width", self.defaults["width"])
         height = request.get("height", self.defaults["height"])
         if (
@@ -220,6 +399,85 @@ class Entry:
             width if width is not None else self.defaults["width"],
             height if height is not None else self.defaults["height"],
         )
+
+    def _lora_problems(self, declared: Any, budget_mib: int, note: str) -> list[str]:
+        """The `lora` field's failures: aliases, weights, repetition, and the budget.
+
+        A request carries aliases, never paths (protocol section 4.1), so an
+        alias the catalog does not declare is refused with the ones it does. The
+        budget is a **memory**, not a count: the requested LoRAs' files are
+        summed by the sizes measured when the entry was resolved, and a request
+        above the deployment's budget is refused with the sum, the budget and the
+        largest single LoRA the catalog declares — the arithmetic a caller can
+        act on. The measured per-MiB behaviour behind the number is section 11.
+        """
+        if not isinstance(declared, list):
+            return [f"lora: expected a list of alias or alias:weight, got {type(declared).__name__}"]
+        if not self.loras:
+            return [
+                "lora: this entry declares no LoRAs, so it accepts none — a catalog belongs to "
+                "the entry that declares it (protocol section 6.1)"
+            ]
+
+        problems: list[str] = []
+        selected: dict[str, Lora] = {}
+        repeated: set[str] = set()
+        for item in declared:
+            try:
+                alias, _weight = _split_lora_item(item)
+            except ValueError as exc:
+                problems.append(f"lora: {exc}")
+                continue
+            if alias not in self.loras:
+                problems.append(
+                    f"lora: this entry declares no LoRA named {alias!r}; it declares "
+                    f"{sorted(self.loras)}"
+                )
+                continue
+            if alias in selected:
+                if alias not in repeated:
+                    repeated.add(alias)
+                    problems.append(
+                        f"lora: {alias!r} is named more than once in one request; name it once "
+                        "with the weight you want"
+                    )
+                continue
+            selected[alias] = self.loras[alias]
+
+        total = sum(lora.size_bytes for lora in selected.values())
+        if total > budget_mib * MIB:
+            largest = max(self.loras.values(), key=lambda lora: lora.size_bytes)
+            problems.append(
+                f"lora: these {len(selected)} LoRAs need {-(-total // MIB)} MiB of device memory "
+                f"and this deployment's budget is {budget_mib} MiB{note}; the largest single "
+                f"LoRA in this catalog is {largest.alias!r} at {largest.mib} MiB. A LoRA's size "
+                "is its file's, read from disk, so the budget is a memory and not a count"
+            )
+        return problems
+
+    def resolve_loras(self, request: dict[str, Any]) -> tuple[Lora, ...]:
+        """The catalog entries a request names, in the order it named them.
+
+        Call it after `accepts`: the request is assumed valid, so every alias is
+        declared and no alias repeats. A request that names an alias without a
+        weight gets the catalog's own, which is the default the entry declares
+        (protocol section 6.1).
+        """
+        selected: list[Lora] = []
+        for item in request.get("lora") or ():
+            alias, weight = _split_lora_item(item)
+            declared = self.loras[alias]
+            selected.append(
+                declared
+                if weight is None
+                else Lora(
+                    alias=alias,
+                    path=declared.path,
+                    weight=weight,
+                    size_bytes=declared.size_bytes,
+                )
+            )
+        return tuple(selected)
 
 
 def _components(declared: Any) -> Components:
@@ -403,6 +661,11 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
 
     _verify_digests(raw.get("digests"), components)
     census = _census(raw["expected_census"])
+    # A catalog is per model and this entry owns it: the paths are checked here,
+    # exactly as a component's is — under this entry's own folder, and present —
+    # so a missing or borrowed LoRA refuses the boot instead of disappearing from
+    # a still later (protocol sections 3 and 6.1).
+    loras = _lora_catalog(raw["loras"], entry_id) if "loras" in raw else {}
 
     return Entry(
         id=entry_id,
@@ -418,5 +681,6 @@ def load_entry(path: str | pathlib.Path | None = None) -> Entry:
         expected_census=census,
         defaults=dict(raw["defaults"]),
         warmup=dict(raw["warmup"]),
+        loras=types.MappingProxyType(loras),
         source=source,
     )

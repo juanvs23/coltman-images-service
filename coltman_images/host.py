@@ -34,17 +34,17 @@ from typing import Any
 
 import yaml
 
-from .entry import PROJECT_ROOT, Entry
+from .entry import LORA_BUDGET_MIB, PROJECT_ROOT, Entry
 
 HOST_FILE = PROJECT_ROOT / "host.yaml"
 """Where the deployment's declaration lives. Never a flag, never an argument to
-the CLI: the server reads it at boot, exactly as it reads the entry."""
+the CLI: the server reads it at boot, exactly as its reads the entry."""
 
-# The closed envelope. `limits` is the one optional field: a deployment that
-# declares nothing tighter than the entry's numbers says so by leaving it out,
-# and one that tightens has to say which ceiling and which range it is imposing.
+# The closed envelope. `limits` and `lora_budget_mib` are the optional fields: a
+# deployment that declares nothing tighter than the entry's numbers says so by
+# leaving `limits` out, and the budget defaults to the measured linear arm.
 _TOP_FIELDS = {"id", "vram_mib", "offload"}
-_OPTIONAL_TOP_FIELDS = frozenset({"limits"})
+_OPTIONAL_TOP_FIELDS = frozenset({"limits", "lora_budget_mib"})
 _LIMIT_FIELDS = {"max_pixels", "steps"}
 _STEP_LIMIT_FIELDS = {"min", "max"}
 
@@ -97,6 +97,7 @@ class Host:
     max_pixels: int | None
     steps_min: int | None
     steps_max: int | None
+    lora_budget_mib: int = LORA_BUDGET_MIB
     source: pathlib.Path = HOST_FILE
 
     @property
@@ -113,12 +114,19 @@ class Effective:
     carries both sides so a refusal can say which one binds. `entry` is the
     resolved entry this deployment is serving; `host` is `None` when the tree has
     no host declaration, which is the portable case.
+
+    `lora_budget_mib` is the deployment's LoRA budget, not the entry's: how much
+    device memory a request's LoRAs may fill is a fact about the card, so it
+    defaults to the measured linear arm and a host declares its own. It is a
+    memory, not a count — the door sums the requested LoRAs' file sizes against
+    it (sections 6.1 and 11).
     """
 
     max_pixels: int
     steps_min: int
     steps_max: int
     entry: Entry
+    lora_budget_mib: int = LORA_BUDGET_MIB
     host: Host | None = None
 
     @property
@@ -131,6 +139,10 @@ class Effective:
             self.entry.steps_min,
             self.entry.steps_max,
         )
+
+    @property
+    def tightened_lora_budget(self) -> bool:
+        return self.lora_budget_mib != LORA_BUDGET_MIB
 
     def pixels_note(self) -> str:
         """The sentence fragment a size refusal appends when the host binds."""
@@ -148,6 +160,21 @@ class Effective:
         return (
             f" (host.yaml's range; the entry declares "
             f"{self.entry.steps_min}..{self.entry.steps_max})"
+        )
+
+    def loras_note(self) -> str:
+        """The sentence fragment a `lora` refusal appends when the host binds.
+
+        The budget is the deployment's, so the note names it and the measured
+        per-MiB behaviour the number rests on — the card spends +313 MiB of
+        device memory for a 325 MB LoRA, linear to eleven, and from twelve the
+        runtime plateaus and pays in time instead (section 11).
+        """
+        if not self.tightened_lora_budget:
+            return ""
+        return (
+            f" (host.yaml's lora_budget_mib; this card spends +313 MiB of device memory for a "
+            "325 MB LoRA, linear to eleven, and from twelve it plateaus and pays in time)"
         )
 
 
@@ -180,6 +207,12 @@ def load_host(path: str | pathlib.Path | None = None) -> Host | None:
     max_pixels: int | None = None
     steps_min: int | None = None
     steps_max: int | None = None
+    # The budget defaults to the measured linear arm. `effective` refuses one
+    # above the card's own memory: a budget is device memory, and a promise of
+    # more of it than the machine reports is one it cannot keep.
+    lora_budget_mib = LORA_BUDGET_MIB
+    if "lora_budget_mib" in raw:
+        lora_budget_mib = _positive("lora_budget_mib", raw["lora_budget_mib"])
     if "limits" in raw:
         limits = raw["limits"]
         _exact_keys("limits", limits, _LIMIT_FIELDS)
@@ -197,6 +230,7 @@ def load_host(path: str | pathlib.Path | None = None) -> Host | None:
         max_pixels=max_pixels,
         steps_min=steps_min,
         steps_max=steps_max,
+        lora_budget_mib=lora_budget_mib,
         source=source,
     )
 
@@ -215,6 +249,11 @@ def effective(entry: Entry, host: Host | None = None) -> Effective:
     entry's default count (a request that names no steps would render outside the
     range that bounds it, which is the invariant `load_entry` already enforces
     inside one entry).
+
+    The LoRA budget follows the same coherence rule in its own dimension: it is
+    device memory, so a host cannot dedicate more of it than the card it declares
+    reports usable. It is a memory and not a count, and the door sums the
+    requested LoRAs' file sizes against it (protocol sections 6.1 and 11).
     """
     if host is None:
         return Effective(
@@ -222,16 +261,25 @@ def effective(entry: Entry, host: Host | None = None) -> Effective:
             steps_min=entry.steps_min,
             steps_max=entry.steps_max,
             entry=entry,
+            lora_budget_mib=LORA_BUDGET_MIB,
             host=None,
         )
 
+    if host.lora_budget_mib > host.vram_mib:
+        raise _refuse(
+            f"lora_budget_mib: the host declares {host.lora_budget_mib} MiB for LoRAs on a card "
+            f"it declares as {host.vram_mib} MiB — a budget is device memory, and a deployment "
+            "cannot dedicate more of it than the card reports usable"
+        )
+
     if host.max_pixels is None:
-        # A host that describes only the machine tightens nothing.
+        # A host that describes only the machine tightens nothing but the budget.
         return Effective(
             max_pixels=entry.max_pixels,
             steps_min=entry.steps_min,
             steps_max=entry.steps_max,
             entry=entry,
+            lora_budget_mib=host.lora_budget_mib,
             host=host,
         )
 
@@ -285,6 +333,7 @@ def effective(entry: Entry, host: Host | None = None) -> Effective:
         steps_min=max(host.steps_min, entry.steps_min),
         steps_max=min(host.steps_max, entry.steps_max),
         entry=entry,
+        lora_budget_mib=host.lora_budget_mib,
         host=host,
     )
 

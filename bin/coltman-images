@@ -614,6 +614,12 @@ def cmd_generate(args: argparse.Namespace) -> int:
         payload["out"] = str(pathlib.Path(args.out).expanduser().resolve())
     if args.upscale:
         payload["upscale"] = True
+    if args.lora:
+        # Aliases, never paths (protocol section 4.1). The server validates them
+        # against the served entry's catalog and refuses an unknown one, a weight
+        # outside (0, 1] and a count above the deployment's cap — the CLI carries
+        # the strings and adds no rule of its own (section 5.1).
+        payload["lora"] = list(args.lora)
 
     # No client-side deadline: the protocol declares no per-request ceiling
     # (section 6), so inventing one here would refuse work the server accepts.
@@ -710,6 +716,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--upscale",
         action="store_true",
         help="permit the declared stage to synthesize the pixels above the native ceiling",
+    )
+    generate.add_argument(
+        "--lora",
+        action="append",
+        default=None,
+        metavar="ALIAS[:WEIGHT]",
+        help=(
+            "a LoRA the served entry declares, applied to this still; repeatable. Absent: no "
+            "LoRA. The weight is a number in (0, 1] and defaults to the entry's own. An alias "
+            "the entry does not declare, and a count above the deployment's cap, are refused"
+        ),
     )
     generate.add_argument("--json", action="store_true", help="print the whole response object")
     generate.add_argument(

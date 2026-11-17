@@ -25,7 +25,7 @@ from typing import Protocol
 
 from PIL import Image
 
-from .entry import Entry
+from .entry import Entry, Lora
 
 DEVICE = "cuda"
 """The one device this system renders on."""
@@ -52,14 +52,22 @@ class ModelAdapter(Protocol):
     """What the core requires of every model.
 
     `prepare` warms the pieces that stay in RAM and establishes the census;
-    `encode` turns a prompt into whatever `denoise` needs; `denoise` turns that
-    opaque value, a shape, a seed and a step count into a still. The core never
-    looks inside the value `encode` returns — that is the whole point of the
-    boundary.
+    `encode` turns a prompt — and the request's LoRA selection — into whatever
+    `denoise` needs; `denoise` turns that opaque value, a shape, a seed and a
+    step count into a still. The core never looks inside the value `encode`
+    returns — that is the whole point of the boundary.
+
+    `supports_loras` is the adapter's declaration that it can apply a catalog
+    entry's LoRAs. It is not a hint: an entry that declares a catalog and names
+    an adapter without it is refused at construction (protocol section 6.3), so
+    a selector the runtime cannot honour never becomes a still that quietly
+    ignored it.
     """
 
     entry: Entry
     name: str
+    supports_loras: bool
+    """Whether this adapter applies a request's LoRA selection (section 6.3)."""
 
     last_load_s: float
     """Seconds the last `denoise` spent putting its model on the card.
@@ -78,8 +86,15 @@ class ModelAdapter(Protocol):
         """The measured parameter census of the model this adapter loaded."""
         ...
 
-    def encode(self, prompt: str) -> object:
-        """Turn a prompt into the opaque features `denoise` consumes."""
+    def encode(self, prompt: str, loras: tuple[Lora, ...] = ()) -> object:
+        """Turn a prompt and the request's LoRAs into the opaque `denoise` value.
+
+        `loras` is the request's selection, already resolved by the core against
+        the entry's catalog and validated at the door — aliases, files and
+        weights (section 4.1). How an adapter applies one is its own business
+        (a tag, a flag, a separate pass); the core passes the selection and
+        knows no syntax.
+        """
         ...
 
     def denoise(
@@ -100,6 +115,11 @@ def load_adapter(entry: Entry) -> ModelAdapter:
     process that only imports the core never loads `diffusers` or
     `transformers`. An unknown name is refused with the names this system does
     have, like any other undeclared asset.
+
+    An entry that declares a LoRA catalog is only servable through an adapter
+    that applies one: the check is here because this is the one place an adapter
+    is built, so the server's boot and the cold callable are both covered and
+    the refusal is exit 3 before a weight is loaded (protocol section 6.3).
     """
     target = _REGISTRY.get(entry.adapter)
     if target is None:
@@ -123,4 +143,12 @@ def load_adapter(entry: Entry) -> ModelAdapter:
             f"adapter: {module_name} does not define {attribute!r}; the registry and "
             "the adapter module disagree"
         )
-    return factory(entry)
+    adapter = factory(entry)
+    if entry.loras and not getattr(adapter, "supports_loras", False):
+        raise AdapterError(
+            f"adapter: entry {entry.id!r} declares a LoRA catalog {sorted(entry.loras)} and the "
+            f"{entry.adapter!r} adapter applies no LoRA — an entry that declares LoRAs its "
+            "adapter cannot apply is refused at boot rather than silently ignored; remove the "
+            "catalog or serve this entry through an adapter that applies it (protocol section 6.3)"
+        )
+    return adapter

@@ -153,6 +153,7 @@ class _Job:
         "done",
         "error",
         "height",
+        "loras",
         "out",
         "prompt",
         "result",
@@ -173,6 +174,7 @@ class _Job:
         steps: int | None,
         upscale: bool,
         out: str | None,
+        loras: list[str] | None = None,
     ) -> None:
         self.accepted_at = accepted_at
         self.prompt = prompt
@@ -182,6 +184,7 @@ class _Job:
         self.steps = steps
         self.upscale = upscale
         self.out = out
+        self.loras = loras
         self.result: dict[str, Any] | None = None
         self.error: BaseException | None = None
         self.done = threading.Event()
@@ -375,6 +378,7 @@ class WarmServer:
                         steps=job.steps,
                         out=job.out,
                         upscale=job.upscale,
+                        loras=job.loras,
                         adapter=self.adapter,
                         limits=self.limits,
                     )
@@ -495,6 +499,7 @@ class WarmServer:
             steps=request.get("steps"),
             upscale=bool(request.get("upscale", False)),
             out=request.get("out"),
+            loras=request.get("lora"),
         )
         self._enqueue(job)
         job.done.wait()

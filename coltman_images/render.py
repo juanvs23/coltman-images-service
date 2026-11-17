@@ -222,6 +222,7 @@ def render(
     steps: int | None = None,
     out: str | None = None,
     upscale: bool = False,
+    loras: list[str] | None = None,
     adapter: ModelAdapter | None = None,
     write: bool = True,
     limits: Any | None = None,
@@ -236,6 +237,13 @@ def render(
     `upscale=True` is the client permitting the declared stage to synthesize the
     pixels above this card's native ceiling; it is the only way past that
     ceiling.
+
+    `loras` is the request's `lora` list — `alias` or `alias:weight` items — and
+    it is validated and resolved here, at the door, before any adapter is built:
+    an alias the entry does not declare, a weight outside `(0, 1]` and a count
+    above the deployment's cap all refuse first (protocol section 4.1). The
+    resolved selection is handed to the adapter, which is the only thing that
+    knows how its runtime applies a LoRA (section 6.3).
 
     `limits` is the deployment's effective limits for this entry, resolved at
     boot by `coltman_images/host.py`; absent, the entry's own limits apply —
@@ -262,7 +270,13 @@ def render(
         request["out"] = out
     if upscale:
         request["upscale"] = True
+    if loras is not None:
+        request["lora"] = list(loras)
     _validate(entry, request, limits)
+    # Resolved after the door has accepted the request, so a bad alias, weight or
+    # count never reaches an adapter. The adapter receives the selection and
+    # decides how its runtime applies it (section 6.3).
+    selected = entry.resolve_loras(request)
     seed = _seed_or_pick(seed)
     steps = entry.steps if steps is None else steps
     destination = _output_path(out, seed) if write else None
@@ -283,7 +297,7 @@ def render(
         torch.cuda.reset_peak_memory_stats()
 
         started = time.perf_counter()
-        features = model.encode(prompt)
+        features = model.encode(prompt, loras=selected)
         image = model.denoise(features, plan.base_width, plan.base_height, seed, steps)
         finished = time.perf_counter()
         observed = model.census()

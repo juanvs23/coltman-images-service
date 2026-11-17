@@ -32,6 +32,7 @@ All commands below are built and exercised by the test matrix.
 | `coltman-images start --entry PATH` | serve an entry file directly — the development shortcut that skips the id resolution | built |
 | `coltman-images start --ui [--ui-port N]` | power on, warm up, and serve the page beside the API | built |
 | `coltman-images generate --prompt "..."` | render one still and print its path | built |
+| `coltman-images generate --lora alias[:weight]` | render with a LoRA the served entry's catalog declares; repeatable | built |
 | `coltman-images generate --model ID` | render, refusing when the server serves another entry and naming the id it serves | built |
 | `coltman-images generate --entry PATH` | render, refusing when the server serves another entry — the development shortcut | built |
 | `coltman-images stop` | graceful shutdown | built |

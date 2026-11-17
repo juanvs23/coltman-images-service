@@ -37,6 +37,17 @@ asset, transparent background` — turns a photograph-style still into a pixel-a
 sprite with a transparent background. Mean difference against the same prompt
 without the LoRA: **40.2 of 255**.
 
+**What the service does with it.** `sd-cli` selects a LoRA from the prompt, with
+`<lora:NAME:WEIGHT>` resolved against `--lora-model-dir`; the alias a request
+names is resolved by the entry's `loras` catalog (protocol section 6.1) and
+`flux2klein_sd` builds the tag and the directory from it (section 6.3). The
+binary's identity travels as the digest that entry pins, so **rebuilding after
+applying this patch means updating `digests.cli` in `model/entry.yaml`** — the
+pre-patch build was `a5f17d22…` and the patched one installed here is
+`3069c361…`. What a request's LoRAs may cost is the deployment's budget in
+device memory (`lora_budget_mib`, 3200 MiB here), summed from the files' own
+sizes, and the measurement behind it is protocol section 11.
+
 ## Build order
 
 ```sh

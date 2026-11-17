@@ -128,6 +128,14 @@ class ZImageAdapter:
     """
 
     name = "zimage"
+    supports_loras = False
+    """This adapter applies no LoRA, and says so.
+
+    A LoRA is applied by the runtime that loads the weights, and this adapter
+    owns that stack itself. An entry declaring a catalog behind this adapter is
+    refused by `load_adapter` at boot (protocol section 6.3), so `encode` never
+    receives a selection.
+    """
 
     def __init__(self, entry: Entry) -> None:
         self.entry = entry
@@ -170,12 +178,16 @@ class ZImageAdapter:
         """The census this adapter last measured."""
         return dict(self._census)
 
-    def encode(self, prompt: str) -> list[torch.Tensor]:
+    def encode(self, prompt: str, loras: tuple = ()) -> list[torch.Tensor]:
         """Run the text encoder once and return the caption features.
 
         The encoder is built, used and dropped here so it never shares the card
         with the transformer. The load clock starts here: it is where the
         response's `load_s` begins.
+
+        `loras` carries nothing for this adapter: it applies none, and an entry
+        that declared a catalog behind it would have been refused by
+        `load_adapter` before this could be called (protocol section 6.3).
         """
         self._load_started = time.perf_counter()
         encoder = _load_text_encoder(self.entry, DEVICE)

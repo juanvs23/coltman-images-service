@@ -26,8 +26,12 @@ components:
 digests:
   # The runtime is installed inside the tree and never committed (protocol
   # section 2, declared exception), so its identity is pinned here: this is the
-  # binary built from commit 532d2c1, and a rebuilt one must update this line.
-  cli: sha256:a5f17d22af14d5f13715b6a7f6248f18eb42da2a1e479c684f2658c22f2fe295
+  # binary built from commit 532d2c1 **with**
+  # patches/0001-flux2-lora-name-conversion.patch applied — the build that makes
+  # a FLUX.2 LoRA apply in full instead of discarding half its tensors — and a
+  # rebuilt one must update this line. The pre-patch build pinned
+  # a5f17d22af14…; this tree is the patched one.
+  cli: sha256:3069c361c226fff978a75037c63cdfd364c9b4a4d1f822523506ba49a233acb6
   vae: sha256:ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04
   llm: sha256:f6f851777709861056efcdad3af01da38b31223a3ba26e61a4f8bf3a2195813a
 
@@ -61,6 +65,43 @@ request_fields:
   - out
   - steps
   - upscale
+  - lora
+
+# The LoRA catalog: what this model may be asked for, under aliases this entry
+# owns (protocol section 6.1). A request names an alias — `--lora pixel-art:0.5`
+# or `{"lora": ["pixel-art:0.5"]}` — and never a path; `weight` is the default a
+# request inherits when it names the alias without one, and a request's own
+# weight replaces it. A catalog is per model: an entry without this block accepts
+# no LoRA at all, which is why Z-Image's entry has none.
+#
+# The three files are this tree's own copies under this entry's own folder,
+# `model/assets/loras/flux2-klein-4b-gguf-q4/`, and are not committed (the ignore
+# file keeps weights out). **A model owns its LoRAs**: reuse across models is
+# possible but unverified — two checkpoints can share a family and a module tree
+# and still disagree — so a LoRA that works on a second model is copied into that
+# model's folder, never shared by path (protocol sections 3 and 6.1), and a
+# catalog path outside this folder refuses the boot.
+#
+# The runtime selects one from the prompt with `<lora:NAME:WEIGHT>`, resolved
+# against `--lora-model-dir`; that syntax is `flux2klein_sd`'s business (section
+# 6.3), and the aliases here are the only names a caller ever sees.
+#
+# `pixel-art` is the 325 MB LoRA the runtime patch was measured on: sprites and
+# characters, 172 tensors, and the reason `patches/0001-flux2-lora-name-conversion.patch`
+# exists — unpatched, half of it was discarded as unused. Its own card prompt is
+# "pixel art sprite, a brave knight in shining armor holding a sword, game asset,
+# transparent background". `anime` is 185 MB. `background-remove` is 76 MB and its
+# instance prompt is "Remove the background from the image".
+loras:
+  pixel-art:
+    path: model/assets/loras/flux2-klein-4b-gguf-q4/pixel-art.safetensors
+    weight: 1.0
+  anime:
+    path: model/assets/loras/flux2-klein-4b-gguf-q4/anime.safetensors
+    weight: 0.5
+  background-remove:
+    path: model/assets/loras/flux2-klein-4b-gguf-q4/background-remove.safetensors
+    weight: 0.5
 
 # The subprocess owns the tensor graph and its stdout is prose, so this path
 # cannot count parameters. What it can prove is what it handed the child: three

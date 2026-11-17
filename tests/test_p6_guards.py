@@ -34,8 +34,11 @@ that owns it:
                                          would have to live
     2 x 1152x1152 POST, plus 2 servers guard 17 (owns); one under a tightened host
                                          declaration, one with no host.yaml at all
+    2 x 256x256 POST, plus 1 server      guard 18 (owns); one with a LoRA, one
+                                         without, on the promoted entry whose
+                                         catalog declares it
 
-That is seventeen stills. Guard 3 costs four by protocol; guard 9 costs two because
+That is nineteen stills. Guard 3 costs four by protocol; guard 9 costs two because
 concurrency cannot be borrowed; guard 10 costs one base render; the CLI still
 doubles as guard 7's second half; guard 15 costs four because two step counts
 must each be proved stable and then proved different; guard 13 costs two because
@@ -43,7 +46,10 @@ serialisation cannot be borrowed either, and it pays its own server because the
 shared one is started without `--ui` — the matrix must stay green on a server
 that never imports gradio. Guard 17 costs two because the host is read at boot
 and there is no flag to point the server at another file, so the two cases are
-two boots. Nothing renders twice for the same guard. Guard 14 writes one more
+two boots. Guard 18 costs two because "the selection reached the runtime" is a
+claim about bytes, and a still cannot be compared with itself: it pays its own
+server too, since the shared one serves Z-Image, whose entry declares no catalog.
+Nothing renders twice for the same guard. Guard 14 writes one more
 still, 256×256, and it is the stub's: no model is loaded for it.
 
 Ordering is explicit, not incidental: methods are numbered because unittest runs
@@ -555,7 +561,7 @@ class _U1StubAdapter:
         self.seen.append("census")
         return dict(self.entry.expected_census)
 
-    def encode(self, prompt: str) -> str:
+    def encode(self, prompt: str, loras: tuple = ()) -> str:
         self.seen.append(f"encode {prompt!r}")
         return prompt
 
@@ -1059,7 +1065,7 @@ class _G15StubAdapter:
     def census(self) -> dict[str, int]:
         return dict(self.entry.expected_census)
 
-    def encode(self, prompt: str) -> str:
+    def encode(self, prompt: str, loras: tuple = ()) -> str:
         return prompt
 
     def denoise(self, features, width: int, height: int, seed: int, steps: int):
@@ -1416,6 +1422,120 @@ def _g17_entry(name: str = "g17-entry.yaml") -> pathlib.Path:
     path = G17_DIR / name
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
     return path
+
+
+# --- guard 18: a catalog on the entry, a budget on the host -----------------
+#
+# A LoRA is per model: the entry declares the aliases a caller may name, and a
+# request names an alias, never a path (protocol sections 4.1 and 6.1). What a
+# selection may cost in device memory is the deployment's — a budget, not a
+# count, because a 76 MB LoRA and a 325 MB LoRA are not one unit each (section
+# 11). The three halves below are the door's two refusals and the one still that
+# proves a selection reaches the runtime.
+
+G18_ID = "flux2-klein-4b-gguf-q4"
+G18_ENTRY = ROOT / "model" / "entry.yaml"
+G18_DIR = EVIDENCE / "g18"
+G18_ALIAS = "pixel-art"
+"""The catalog's first alias: the 325 MB LoRA the runtime patch was measured on."""
+G18_SIDE = 256
+"""The still's size: a LoRA is the variable here, the box is not."""
+G18_PROMPT = (
+    "pixel art sprite, a brave knight in shining armor holding a sword, game asset, "
+    "transparent background"
+)
+"""The pixel-art LoRA's own card prompt, from `patches/README.md`."""
+
+
+def _g18_no_catalog_entry() -> pathlib.Path:
+    """A synthetic entry that accepts the field and declares no catalog.
+
+    The law's rule is per model: an entry without a `loras` block accepts no LoRA
+    at all. This fixture is small enough to prove it without hashing a
+    checkpoint (guard 15 shows the same shape for `limits.steps`).
+    """
+    G18_DIR.mkdir(parents=True, exist_ok=True)
+    asset = G18_DIR / "g18-asset.bin"
+    asset.write_bytes(b"guard 18: a component the stub never reads\n")
+    document = {
+        "id": "g18-no-catalog",
+        "adapter": G15_STUB,
+        "checkpoint": str(asset),
+        "components": {"weights": str(asset)},
+        "steps": 4,
+        "guidance": 1.0,
+        "limits": {"max_pixels": G18_SIDE * G18_SIDE, "steps": {"min": 3, "max": 9}},
+        "request_fields": ["prompt", "seed", "width", "height", "out", "lora"],
+        "expected_census": {"parameters": 1},
+        "defaults": {"width": G18_SIDE, "height": G18_SIDE, "format": "png"},
+        "warmup": {"width": G18_SIDE, "height": G18_SIDE, "prompt": "warm up", "seed": 0},
+    }
+    path = G18_DIR / "g18-no-catalog.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _g18_foreign_lora_entry() -> pathlib.Path:
+    """A synthetic entry whose catalog borrows another model's folder.
+
+    The ownership rule is structural (protocol sections 3 and 6.1): a LoRA
+    belongs to the model it was verified on, so a path under
+    `model/assets/loras/<some other id>/` refuses at load, naming the path and
+    the folder it should have come from. The file need not exist — the folder is
+    checked before the file is, so the refusal is about ownership.
+    """
+    G18_DIR.mkdir(parents=True, exist_ok=True)
+    asset = G18_DIR / "g18-asset.bin"
+    asset.write_bytes(b"guard 18: a component the stub never reads\n")
+    document = {
+        "id": "g18-foreign-lora",
+        "adapter": G15_STUB,
+        "checkpoint": str(asset),
+        "components": {"weights": str(asset)},
+        "steps": 4,
+        "guidance": 1.0,
+        "limits": {"max_pixels": G18_SIDE * G18_SIDE, "steps": {"min": 3, "max": 9}},
+        "request_fields": ["prompt", "seed", "width", "height", "out", "lora"],
+        "expected_census": {"parameters": 1},
+        "defaults": {"width": G18_SIDE, "height": G18_SIDE, "format": "png"},
+        "warmup": {"width": G18_SIDE, "height": G18_SIDE, "prompt": "warm up", "seed": 0},
+        "loras": {
+            "pixel-art": {
+                "path": "model/assets/loras/another-model/pixel-art.safetensors",
+                "weight": 1.0,
+            }
+        },
+    }
+    path = G18_DIR / "g18-foreign-lora.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _g18_host(name: str, lora_budget_mib: int, vram_mib: int = 7857) -> pathlib.Path:
+    """A host declaration that differs from the shipped one in the budget only."""
+    G18_DIR.mkdir(parents=True, exist_ok=True)
+    path = G18_DIR / name
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "id": "p6-guard-18",
+                "vram_mib": vram_mib,
+                "offload": True,
+                "lora_budget_mib": lora_budget_mib,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _g18_restore_host() -> None:
+    """Put the tree's declaration back exactly as it was found."""
+    if HOST_DECLARATION is None:
+        HOST_FILE.unlink(missing_ok=True)
+        return
+    HOST_FILE.write_bytes(HOST_DECLARATION)
 
 
 class ServiceCase(GuardCase):
@@ -3479,6 +3599,307 @@ class ServiceCase(GuardCase):
             HOST_FILE.read_bytes() if HOST_FILE.is_file() else None,
             HOST_DECLARATION,
             "guard 17 left the tree's host declaration changed",
+        )
+
+
+    # --- 16: guard 18 owns the catalog and the cap, and it runs last --------
+
+    def test_0980_guard18_loras(self) -> None:
+        """Guard 18: a catalog on the entry, a budget on the host, three halves.
+
+        1. **An alias the catalog does not declare is refused, and the known
+           aliases are listed.** The same rule the entry applies to a step
+           range: a name this model does not have is a sentence with the names
+           it does have, not a silent no-op. The request field also belongs to
+           the entry — an entry with no `loras` block accepts none — a weight
+           outside `(0, 1]` is refused by name, and a catalog path outside this
+           entry's own folder is refused, naming the path and the folder it
+           should have come from: a LoRA belongs to the model it was verified on
+           (sections 3 and 6.1).
+        2. **A request whose LoRAs exceed the deployment's budget is refused with
+           the arithmetic.** The budget is `lora_budget_mib` — 3200 MiB here, a
+           memory and not a count — and the door sums the requested LoRAs' file
+           sizes, measured when the entry was resolved. A host that declares 512
+           tightens it, and the refusal names the sum, the budget and the largest
+           single LoRA in the catalog; a budget larger than the card the host
+           declares is refused at boot, because it is memory the machine does not
+           have. Refusals are the door's: the worker counts do not move.
+        3. **A request that fits is served.** One LoRA at 256x256 — 311 MiB of a
+           3200 MiB budget — renders, and the same request without it renders
+           different bytes, which is the only proof that the selection reached the
+           runtime instead of stopping at the request parser. The command line is
+           asserted too: the tag the runtime reads (`<lora:NAME:WEIGHT>`) and the
+           directory it resolves `NAME` against are both built from the catalog.
+
+        It runs after guard 17 has restored `host.yaml` and stopped its servers.
+        It pays its own boots because the shared fixture serves Z-Image, whose
+        entry declares no catalog — exactly the per-model rule this guard states
+        — and because a tightened budget is read at boot and there is no flag to
+        point the server at another file.
+        """
+        from coltman_images import host as host_module
+        from coltman_images.entry import LORAS_DIR, EntryError, load_entry
+        from coltman_images.adapters.flux2klein_sd import _command
+
+        entry = load_entry(G18_ENTRY)
+        catalog = sorted(entry.loras)
+        self.assertEqual(
+            catalog, ["anime", "background-remove", "pixel-art"], "the entry's catalog changed"
+        )
+        own_folder = LORAS_DIR / entry.id
+        for alias, lora in entry.loras.items():
+            self.assertTrue(lora.path.is_file(), f"{alias}: {lora.path} is not a file")
+            self.assertTrue(
+                lora.path.resolve().is_relative_to(ROOT),
+                f"{alias}: {lora.path} resolves outside the tree",
+            )
+            # The ownership rule, on the shipped tree: one folder per model.
+            self.assertEqual(
+                lora.path.resolve().parent,
+                own_folder.resolve(),
+                f"{alias}: {lora.path} is not in this model's own folder {own_folder}",
+            )
+            # The budget is spent on what the file weighs, and the number is read
+            # from disk rather than declared: a LoRA replaced by a bigger one is
+            # refused without anyone editing the entry.
+            self.assertEqual(
+                lora.size_bytes, lora.path.stat().st_size, f"{alias}: cached size is not the file's"
+            )
+            self.assertGreater(lora.size_bytes, 0, f"{alias}: a LoRA of zero bytes")
+        largest = max(entry.loras.values(), key=lambda lora: lora.size_bytes)
+        # The budget this tree actually serves under, resolved the way the server
+        # resolves it: the guard prints the number the door used, not a copy.
+        shipped = host_module.effective(entry, host_module.load_host())
+
+        # 1. The alias, the field, the weight, and the folder.
+        foreign_path = _g18_foreign_lora_entry()
+        with self.assertRaises(EntryError) as foreign:
+            load_entry(foreign_path)
+        foreign_said = str(foreign.exception)
+        self.assertIn(
+            "another-model/pixel-art.safetensors", foreign_said, f"the refusal does not name the path: {foreign_said}"
+        )
+        self.assertIn(
+            "model/assets/loras/g18-foreign-lora/",
+            foreign_said,
+            f"the refusal does not name the folder it should have come from: {foreign_said}",
+        )
+
+        unknown = entry.accepts({"prompt": "x", "lora": ["no-such-alias"]})
+        unknown_said = " ".join(unknown)
+        self.assertIn("no-such-alias", unknown_said, f"the refusal does not name the alias: {unknown_said}")
+        for alias in catalog:
+            self.assertIn(alias, unknown_said, f"the refusal does not list {alias!r}: {unknown_said}")
+
+        no_catalog = load_entry(_g18_no_catalog_entry())
+        self.assertEqual(sorted(no_catalog.loras), [], "the fixture declares a catalog")
+        refused_field = no_catalog.accepts({"prompt": "x", "lora": ["pixel-art"]})
+        self.assertIn("declares no LoRAs", " ".join(refused_field), f"{refused_field}")
+
+        weight_refusals = {}
+        for item in ("anime:0", "anime:1.01", "anime:not-a-number"):
+            said = " ".join(entry.accepts({"prompt": "x", "lora": [item]}))
+            self.assertIn("weight", said, f"{item} was not refused by name: {said}")
+            weight_refusals[item] = said
+        self.assertEqual(
+            entry.accepts({"prompt": "x", "lora": ["anime", "pixel-art:1", "background-remove:0.25"]}),
+            [],
+            "the entry refused a request inside its own catalog and weight rule",
+        )
+
+        # 2. The budget: a memory, summed from the files, with the arithmetic named.
+        tight_host = host_module.load_host(_g18_host("g18-host-512.yaml", 512))
+        tight = host_module.effective(entry, tight_host)
+        self.assertEqual(tight.lora_budget_mib, 512, "the host's budget is not the effective one")
+        whole_catalog = ["anime", "background-remove", "pixel-art"]
+        tightened = entry.accepts({"prompt": "x", "lora": whole_catalog}, tight)
+        tightened_said = " ".join(tightened)
+        needed = sum(entry.loras[alias].size_bytes for alias in whole_catalog)
+        needed_mib = -(-needed // (1 << 20))
+        self.assertIn(f"{needed_mib} MiB", tightened_said, f"the refusal does not name the sum: {tightened_said}")
+        self.assertIn("budget is 512 MiB", tightened_said, f"the refusal does not name the budget: {tightened_said}")
+        self.assertIn("host.yaml", tightened_said, f"the refusal does not say which declaration binds: {tightened_said}")
+        self.assertIn(largest.alias, tightened_said, f"the refusal does not name the largest LoRA: {tightened_said}")
+        self.assertIn(f"{largest.mib} MiB", tightened_said, f"the refusal does not give its size: {tightened_said}")
+        self.assertEqual(
+            entry.accepts({"prompt": "x", "lora": [G18_ALIAS]}, tight),
+            [],
+            "a single LoRA that fits the tightened budget was refused",
+        )
+
+        with self.assertRaises(host_module.HostError) as incoherent:
+            host_module.effective(
+                entry, host_module.load_host(_g18_host("g18-host-9000.yaml", 9000, vram_mib=7857))
+            )
+        self.assertIn("9000", str(incoherent.exception))
+        self.assertIn("7857", str(incoherent.exception))
+        self.assertIn("device memory", str(incoherent.exception))
+
+        # 3. The command line, and then the still.
+        sample = G18_DIR / "g18-child.png"
+        selected = entry.resolve_loras({"lora": ["pixel-art:0.75"]})
+        with_tag = _command(entry, "a knight", G18_SIDE, G18_SIDE, 7, 8, sample, True, selected)
+        without_tag = _command(entry, "a knight", G18_SIDE, G18_SIDE, 7, 8, sample, True)
+        tagged_prompt = with_tag[with_tag.index("-p") + 1]
+        self.assertIn("<lora:", tagged_prompt, f"the child was given no tag: {tagged_prompt}")
+        self.assertIn("pixel-art.safetensors:0.75>", tagged_prompt, f"{tagged_prompt}")
+        self.assertIn("--lora-model-dir", with_tag, "the tags have no directory to resolve against")
+        self.assertEqual(
+            with_tag[with_tag.index("--lora-model-dir") + 1], str(ROOT), "the LoRA directory is not the tree"
+        )
+        self.assertNotIn("--lora-model-dir", without_tag, "a request with no LoRA gained the flag")
+        self.assertNotIn("<lora:", without_tag[without_tag.index("-p") + 1], "a request with no LoRA gained a tag")
+
+        # One instance per card, as guards 13, 16 and 17 do under `-k guard18`.
+        if _state() is not None or _server_pids():
+            cleared = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and (_state() is not None or _server_pids()):
+                time.sleep(0.5)
+            self.assertEqual(_server_pids(), [], f"the shared server would not stop: {cleared.stderr}")
+            self.assertIsNone(_state(), "the shared server left its state file behind")
+
+        def _stop_server() -> None:
+            stopped = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                if not STATE_FILE.exists() and not _server_pids() and _health()[0] != 200:
+                    return
+                time.sleep(0.5)
+            self.fail(f"the server would not stop: {stopped.stderr}")
+
+        live: dict[str, object] = {}
+        try:
+            # 1b. The alias refusal, and 3. the still, on the shipped budget.
+            started = _cli("start", "--model", G18_ID, timeout=600)
+            print(f"guard 18: start --model {G18_ID} → exit {started.returncode}")
+            self.assertEqual(started.returncode, 0, f"start failed: {started.stderr}")
+            status, health = _health()
+            self.assertEqual(status, 200, f"/health did not answer: {health}")
+
+            counters_before = (_render_count(), _render_failure_count())
+            alias_status, alias_body = _generate({"prompt": "x", "lora": ["no-such-alias"]})
+            counters_after = (_render_count(), _render_failure_count())
+            live["unknown_alias"] = {"status": alias_status, "body": alias_body}
+            live["worker_counters"] = {"before": counters_before, "after": counters_after}
+            self.assertEqual(alias_status, 400, f"unknown alias: expected 400, got {alias_status} {alias_body}")
+            self.assertEqual(
+                alias_body.get("error", {}).get("code"), "invalid_request", f"{alias_body}"
+            )
+            live_alias_said = str(alias_body.get("error", {}).get("message", ""))
+            self.assertIn("no-such-alias", live_alias_said)
+            for alias in catalog:
+                self.assertIn(alias, live_alias_said, f"the refusal does not list {alias!r}")
+            self.assertEqual(
+                counters_after, counters_before, "a refused LoRA request reached the worker"
+            )
+            print(f"guard 18: unknown alias → 400 {live_alias_said[:90]}…")
+
+            with_lora = FILES / "g18-one-lora-256.png"
+            without_lora = FILES / "g18-no-lora-256.png"
+            for path in (with_lora, without_lora):
+                path.unlink(missing_ok=True)
+            lo_status, lo_body = _generate(
+                {
+                    "prompt": G18_PROMPT,
+                    "seed": SEED,
+                    "width": G18_SIDE,
+                    "height": G18_SIDE,
+                    "lora": [G18_ALIAS],
+                    "out": str(with_lora),
+                }
+            )
+            plain_status, plain_body = _generate(
+                {
+                    "prompt": G18_PROMPT,
+                    "seed": SEED,
+                    "width": G18_SIDE,
+                    "height": G18_SIDE,
+                    "out": str(without_lora),
+                }
+            )
+            live["served"] = {"status": lo_status, "body": lo_body, "out": str(with_lora)}
+            live["plain"] = {"status": plain_status, "body": plain_body, "out": str(without_lora)}
+            self.assertEqual(lo_status, 200, f"a request inside the budget failed: {lo_body}")
+            self.assertEqual(plain_status, 200, f"the comparison render failed: {plain_body}")
+            self.assertTrue(with_lora.is_file(), f"{with_lora} was not written")
+            self.assertEqual(_png_size(with_lora), (G18_SIDE, G18_SIDE))
+            self.assertGreater(float(lo_body.get("render_s", 0.0)), 0.0, "the still reports no render_s")
+            with_digest = _sha256(with_lora)
+            plain_digest = _sha256(without_lora)
+            live["digests"] = {"with": with_digest, "without": plain_digest}
+            print(
+                f"guard 18: one LoRA at {G18_SIDE}x{G18_SIDE} ({entry.loras[G18_ALIAS].mib} MiB of "
+                f"{shipped.lora_budget_mib} MiB) → 200 in {lo_body.get('render_s')} s; "
+                f"sha256 {with_digest[:16]}… against {plain_digest[:16]}… without it"
+            )
+            self.assertNotEqual(
+                with_digest,
+                plain_digest,
+                "the same request with and without the LoRA produced the same bytes: the selection "
+                "never reached the runtime",
+            )
+            _stop_server()
+
+            # 2b. The tightened budget, at the door of a live server.
+            HOST_FILE.write_text(
+                _g18_host("g18-host-512.yaml", 512).read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            started_tight = _cli("start", "--model", G18_ID, timeout=600)
+            print(f"guard 18: start under a 512 MiB budget → exit {started_tight.returncode}")
+            self.assertEqual(started_tight.returncode, 0, f"start under a budget failed: {started_tight.stderr}")
+            counters_before = (_render_count(), _render_failure_count())
+            budget_status, budget_body = _generate({"prompt": "x", "lora": whole_catalog})
+            counters_after = (_render_count(), _render_failure_count())
+            live["over_budget"] = {"status": budget_status, "body": budget_body, "host": "512 MiB"}
+            live["over_budget_counters"] = {"before": counters_before, "after": counters_after}
+            budget_said = str(budget_body.get("error", {}).get("message", ""))
+            self.assertEqual(
+                budget_status, 400, f"a request above the budget was not refused: {budget_body}"
+            )
+            self.assertIn(f"{needed_mib} MiB", budget_said, f"the refusal does not name the sum: {budget_said}")
+            self.assertIn("budget is 512 MiB", budget_said, f"the refusal does not name the budget: {budget_said}")
+            self.assertEqual(
+                counters_after, counters_before, "a refused LoRA request reached the worker"
+            )
+            print(f"guard 18: 512 MiB budget, three LoRAs → 400 …{budget_said[:150]}…")
+        finally:
+            _g18_restore_host()
+            if _state() is not None or _server_pids():
+                _stop_server()
+
+        self.assertEqual(
+            HOST_FILE.read_bytes() if HOST_FILE.is_file() else None,
+            HOST_DECLARATION,
+            "guard 18 left the tree's host declaration changed",
+        )
+        _put(
+            "guard18",
+            {
+                "entry": {
+                    "id": entry.id,
+                    "catalog": catalog,
+                    "sizes_mib": {alias: lora.mib for alias, lora in entry.loras.items()},
+                    "folder": own_folder.relative_to(ROOT).as_posix(),
+                    "foreign_refusal": foreign_said,
+                },
+                "unknown_alias": unknown_said,
+                "no_catalog": refused_field,
+                "weights": weight_refusals,
+                "budget": {
+                    "needed_mib": needed_mib,
+                    "tight": 512,
+                    "message": tightened_said,
+                    "largest": [largest.alias, largest.mib],
+                },
+                "incoherent": str(incoherent.exception),
+                "command": {
+                    "prompt_with_tag": tagged_prompt,
+                    "has_dir": "--lora-model-dir" in with_tag,
+                    "prompt_without_tag": without_tag[without_tag.index("-p") + 1],
+                },
+                "live": live,
+            },
         )
 
 
