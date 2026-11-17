@@ -47,8 +47,9 @@ limits:
   # rendered, so it is the ceiling. The operator read the ladder's contact sheet
   # as the best distribution of figures at 1152x1152 — an indication resting on
   # one prompt and one seed, not a distribution — and the defaults below follow
-  # it. The box and the eight-step default are two measured values, not one
-  # measured pair: the ladder ran the box at four steps.
+  # it. The pair is measured too: 1152x1152 at eight steps is 28.693 s through
+  # the service with the device peaking at 4815 MiB, so the defaults cost about
+  # two and a half times the old 1024x1024 at four steps.
   max_pixels: 1327104
   steps: {min: 4, max: 8}
 

@@ -304,9 +304,16 @@ default.** Two facts bound it, and the entry's own comment repeats them: the
 1152² reading rests on **one prompt and one seed**, so it is an indication and not
 a distribution; and it is square, while the same area is a 1536×864 box with both
 sides on the 16-px grid, so raising the ceiling also admits shapes this ladder did
-not render. The 1152² margin was measured at four steps; the step count does not
-change the peak (T3), but the shape was never sampled above 1024² at a wide
-aspect.
+not render.
+
+**The default pair was then measured on its own**, because two measured values are
+not a measured pair: `1152×1152` at **eight** steps through the service is
+**28.693 s** with the device peaking at **4815 MiB** — about two and a half times
+the old `1024×1024` at four steps, and 114 MiB above the same box at four. That
+last figure is worth keeping: at 1024² the step count left the peak flat (T3
+measured 3865 MiB at four, six and eight), and at 1152² it does not. The peak is
+flat in steps only while the box is not near the ceiling. No shape was sampled
+above 1024² at a wide aspect.
 
 ### The sampler and the flow shift — two knobs the entry cannot reach
 
