@@ -70,9 +70,9 @@ def _output_path(out: str | None, seed: int) -> pathlib.Path:
     return path.absolute()
 
 
-def _validate(entry: Entry, request: dict[str, Any]) -> None:
+def _validate(entry: Entry, request: dict[str, Any], limits: Any | None = None) -> None:
     """Refuse a bad request before any GPU work (guard 1's rule, applied here)."""
-    problems = entry.accepts(request)
+    problems = entry.accepts(request, limits)
     if problems:
         raise ValueError("invalid request: " + "; ".join(problems))
 
@@ -118,16 +118,29 @@ def _base_size(max_pixels: int, width: int, height: int, unit: int = 16) -> tupl
     return best
 
 
-def _plan(entry: Entry, prompt: str, width: int, height: int, upscale: bool) -> _Plan:
+def _plan(
+    entry: Entry,
+    prompt: str,
+    width: int,
+    height: int,
+    upscale: bool,
+    limits: Any | None = None,
+) -> _Plan:
     """Decide the render size and the delivered size, before any GPU work.
 
     The requested `width`/`height` are the file the client receives. Below the
-    entry's ceiling that is also what gets rendered; above it the request needs
-    the client's permission (`upscale: true`) and a base that still fits, or it
-    is refused here — at the door, with the ceiling named, not mid-render.
+    ceiling that is also what gets rendered; above it the request needs the
+    client's permission (`upscale: true`) and a base that still fits, or it is
+    refused here — at the door, with the ceiling named, not mid-render.
+
+    The ceiling is the deployment's effective one — the intersection of the
+    host's declaration and the entry's, resolved at boot (protocol section 6.1).
+    Absent `limits`, it is the entry's own, which is the portable case.
     """
+    cap = entry.max_pixels if limits is None else int(limits.max_pixels)
+    note = "" if limits is None else limits.pixels_note()
     area = width * height
-    if area <= entry.max_pixels:
+    if area <= cap:
         return _Plan(width, height, width, height, None)
 
     declaration = load_declaration()
@@ -135,32 +148,34 @@ def _plan(entry: Entry, prompt: str, width: int, height: int, upscale: bool) -> 
     if not upscale:
         raise ValueError(
             "invalid request: size: "
-            f"{width}x{height} is {area} px, above the {entry.max_pixels} px this entry "
-            "declares as the largest area measured on this card; send upscale: true to let "
-            f"the declared x{factor} stage supply the difference"
+            f"{width}x{height} is {area} px, above the {cap} px this deployment renders "
+            f"natively{note}; send upscale: true to let the declared x{factor} stage supply "
+            "the difference"
         )
-    ceiling = entry.max_pixels * factor * factor
+    ceiling = cap * factor * factor
     if area > ceiling:
         raise ValueError(
             "invalid request: size: "
             f"{width}x{height} is {area} px, above the {ceiling} px the declared x{factor} "
-            f"stage can serve (a {entry.max_pixels} px render, x{factor} on each side)"
+            f"stage can serve (a {cap} px render, x{factor} on each side)"
         )
 
-    base = _base_size(entry.max_pixels, width, height)
+    base = _base_size(cap, width, height)
     if base is None:
         raise ValueError(
             "invalid request: size: "
-            f"{width}x{height} leaves no same-aspect base at or below {entry.max_pixels} px"
+            f"{width}x{height} leaves no same-aspect base at or below {cap} px"
         )
     base_width, base_height = base
     # The base is what the pipeline will be asked for, so it has to pass the
     # entry's own size rule. The entry owns that rule; this call is the check.
-    problems = entry.accepts({"prompt": prompt, "width": base_width, "height": base_height})
+    problems = entry.accepts(
+        {"prompt": prompt, "width": base_width, "height": base_height}, limits
+    )
     if problems:
         raise ValueError(
             "invalid request: size: the largest same-aspect base under the "
-            f"{entry.max_pixels} px ceiling is {base_width}x{base_height}, which this entry "
+            f"{cap} px ceiling is {base_width}x{base_height}, which this entry "
             "refuses: " + "; ".join(problems)
         )
     return _Plan(base_width, base_height, width, height, factor)
@@ -209,6 +224,7 @@ def render(
     upscale: bool = False,
     adapter: ModelAdapter | None = None,
     write: bool = True,
+    limits: Any | None = None,
 ) -> dict[str, Any]:
     """Render one still and report what was measured.
 
@@ -221,6 +237,11 @@ def render(
     pixels above this card's native ceiling; it is the only way past that
     ceiling.
 
+    `limits` is the deployment's effective limits for this entry, resolved at
+    boot by `coltman_images/host.py`; absent, the entry's own limits apply —
+    which is what the server passed before the host declaration existed, and
+    what a tree with no `host.yaml` still gets.
+
     `adapter` is the warm adapter a server built at boot; when it is omitted the
     callable builds and prepares its own and closes it again, which is the cold
     path P2 exercises. `write=False` renders and discards the still, which is the
@@ -231,7 +252,7 @@ def render(
     this callable is cold by design and the server pays the load once instead.
     """
     width, height = entry.dims(width, height)
-    plan = _plan(entry, prompt, width, height, upscale)
+    plan = _plan(entry, prompt, width, height, upscale, limits)
     request: dict[str, Any] = {"prompt": prompt, "width": width, "height": height}
     if seed is not None:
         request["seed"] = seed
@@ -241,7 +262,7 @@ def render(
         request["out"] = out
     if upscale:
         request["upscale"] = True
-    _validate(entry, request)
+    _validate(entry, request, limits)
     seed = _seed_or_pick(seed)
     steps = entry.steps if steps is None else steps
     destination = _output_path(out, seed) if write else None

@@ -148,8 +148,23 @@ class Entry:
     warmup: dict[str, Any] = field(default_factory=dict)
     source: pathlib.Path = DEFAULT_ENTRY
 
-    def accepts(self, request: dict[str, Any]) -> list[str]:
-        """Return the validation failures for a request; empty means accepted."""
+    def accepts(self, request: dict[str, Any], limits: Any | None = None) -> list[str]:
+        """Return the validation failures for a request; empty means accepted.
+
+        `limits` is the deployment's effective limits for this entry — the
+        intersection of the host declaration and this entry, resolved once at
+        boot by `coltman_images/host.py`. Absent, the entry's own limits apply,
+        which is both the portable case (a tree with no `host.yaml`) and every
+        call that predates the host declaration. The object is read for
+        `max_pixels`, `steps_min` and `steps_max` only; the law does not import
+        the host and does not know what else it carries.
+        """
+        cap = self.max_pixels if limits is None else limits.max_pixels
+        steps_min = self.steps_min if limits is None else limits.steps_min
+        steps_max = self.steps_max if limits is None else limits.steps_max
+        pixels_note = "" if limits is None else limits.pixels_note()
+        steps_note = "" if limits is None else limits.steps_note()
+
         problems: list[str] = []
         for key in sorted(request):
             if key not in self.request_fields:
@@ -173,10 +188,10 @@ class Entry:
             steps = request["steps"]
             if not isinstance(steps, int) or isinstance(steps, bool):
                 problems.append("steps: expected an integer")
-            elif not self.steps_min <= steps <= self.steps_max:
+            elif not steps_min <= steps <= steps_max:
                 problems.append(
-                    f"steps: expected an integer inside {self.steps_min}..{self.steps_max}, "
-                    f"got {steps!r}"
+                    f"steps: expected an integer inside {steps_min}..{steps_max}, "
+                    f"got {steps!r}{steps_note}"
                 )
         out = request.get("out")
         if out is not None and (not isinstance(out, str) or not pathlib.Path(out).is_absolute()):
@@ -190,12 +205,13 @@ class Entry:
             and isinstance(height, int)
             and not isinstance(width, bool)
             and not isinstance(height, bool)
-            and width * height > self.max_pixels
+            and width * height > cap
             and not request.get("upscale")
         ):
             problems.append(
-                f"size: {width}x{height} is {width * height} px, above the {self.max_pixels} px this "
-                "entry renders natively; pass upscale: true to let the declared stage synthesize the rest"
+                f"size: {width}x{height} is {width * height} px, above the {cap} px this "
+                f"deployment renders natively{pixels_note}; pass upscale: true to let the "
+                "declared stage synthesize the rest"
             )
         return problems
 

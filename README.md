@@ -23,6 +23,47 @@ how to use it.
 The service reads **only its own tree** — the code, the entries, `model/assets/`,
 its own `.venv` and the vendored `ggml` runtime. It never reads another project.
 
+### The deployment's declaration
+
+`host.yaml` at the tree root says what **this machine** can afford, kept apart
+from what a model is. `model/entry.yaml` declares one model's assets, regime and
+the largest box it has been measured to render here; `host.yaml` declares the
+deployment around it, and the server reads it at boot — there is no flag for it.
+
+```yaml
+id: this-deployment
+vram_mib: 7857          # torch-usable device memory on this card
+offload: true           # hand the ggml child --offload-to-cpu
+```
+
+That is the whole file this tree ships. A deployment may add one optional block,
+to render less than the entry allows — valid only when the entry's default box
+fits under the cap:
+
+```yaml
+limits:                 # optional, and it may only tighten
+  max_pixels: 1048576   # at most the entry's measured ceiling, at least its default box
+  steps: {min: 6, max: 8}   # inside the entry's range, and containing its default count
+```
+
+- **A host may tighten, never widen.** The effective ceiling is the smaller of
+  the host's and the entry's, and the effective step range is their intersection;
+  that is what a request is validated against. A `max_pixels` above the entry's
+  measured ceiling, or a step range reaching outside the entry's, is refused at
+  `start` with exit 3 and a message naming the bound: the entry's number is a
+  measurement, and a host is not allowed to promise a box nobody rendered. A cap
+  below the entry's default box is refused too, rather than shrinking every
+  default request behind your back — lower the entry's defaults or raise the cap.
+- **It is optional.** With no `host.yaml`, the entry's own limits apply and
+  `offload` is on: the service runs exactly as it did before the file existed.
+- **Why this tree ships no `limits`.** Both entries render their default box
+  exactly at their measured ceiling (1152×1152 on the promoted entry, 1280×720 on
+  Z-Image's), so a cap that tightens either one sits below that entry's default
+  box — refused — and a cap above either ceiling widens a measurement — refused
+  too; no single cap covers both entries. A deployment that wants a smaller
+  envelope declares a cap **and** serves an entry whose defaults fit under it.
+  Protocol section 6.1 has the arithmetic.
+
 ## Install
 
 A fresh clone carries the code and the law. It does **not** carry the weights,
@@ -266,13 +307,15 @@ Full table and the exact mapping: `docs/protocol.md` §5.4.
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-One test per guard, and guard 4 is written as two: ten to fifteen minutes, a dozen
+One test per guard, and guard 4 is written as two: ten to fifteen minutes, seventeen
 stills. They prove request validation, the lifecycle and its idempotent edges,
 that the warm-up is real, the census, determinism, the default folder, CLI/API
 parity, self-containment, single-flight, the upscale stage, one instance per
 card, that the core imports nothing from the model stack, that the entry knows
-no model by name, that the step count is bounded by the entry, and that the web
-page is a surface on the same queue and never a renderer of its own.
+no model by name, that the step count is bounded by the entry, that the web
+page is a surface on the same queue and never a renderer of its own, and that the
+host declaration may only tighten what the entry measured — with a tree that has
+none still serving the entry's own limits.
 
 The count lives in `docs/protocol.md` §10 and nowhere else; this section names
 what the tests are for, not how many there are today.
@@ -290,6 +333,7 @@ committed `README.md` and a gitignored `evidence/` folder.
 | `docs/changelog.md` | one entry per work unit |
 | `docs/reference/` | the measurements the cost model is built on — evidence, not law |
 | `model/entry.yaml` | the model entry: assets, regime, defaults, ceiling |
+| `host.yaml` | the deployment: the card's memory, the offload policy, and limits that may only tighten |
 | `model/upscaler.yaml` | the declared stage: its own weights and scale |
 | `coltman_images/` | the core, plus `adapters/zimage.py` behind the adapter contract |
 | `coltman_images/ui.py` | the web page of `start --ui`: presentation for the submission seam |

@@ -36,6 +36,7 @@ import time
 
 from PIL import Image
 
+from .. import host as host_module
 from ..adapter import AdapterError
 from ..entry import PROJECT_ROOT, Entry
 
@@ -177,6 +178,45 @@ def _release_card(handle: object) -> None:
         pass
 
 
+def _command(
+    entry: Entry,
+    prompt: str,
+    width: int,
+    height: int,
+    seed: int,
+    steps: int,
+    destination: pathlib.Path,
+    offload: bool,
+) -> list[str]:
+    """The child's command line, built from the entry and the host's declaration.
+
+    `offload` is never decided here: it arrives from `coltman_images/host.py`,
+    which owns what the deployment can afford, and `true` is what this service
+    has always done. Measured, the flag costs 0.6 s and returns 3254 MiB — the
+    difference between fitting beside the operator's desktop and not
+    (`docs/reference/flux2-klein.md`).
+
+    It is a function of its own so the flag's presence is observable without
+    starting the child: a test can build both command lines and read them.
+    """
+    command = [
+        str(entry.components.cli),
+        "--diffusion-model", str(entry.checkpoint),
+        "--vae", str(entry.components.vae),
+        "--llm", str(entry.components.llm),
+        "-p", prompt,
+        "--cfg-scale", repr(float(entry.guidance)),
+        "--steps", str(int(steps)),
+        "-W", str(int(width)),
+        "-H", str(int(height)),
+        "-s", str(int(seed)),
+        "-o", str(destination),
+    ]
+    if offload:
+        command.append("--offload-to-cpu")
+    return command
+
+
 class Flux2KleinSdAdapter:
     """FLUX.2 [klein] 4B behind the `ModelAdapter` contract, as one subprocess.
 
@@ -191,6 +231,10 @@ class Flux2KleinSdAdapter:
         self.entry = entry
         self.last_load_s = 0.0
         _refuse_incoherent_entry(entry)
+        # The host declaration is the owner of this fact, so it is read through
+        # it and never parsed here; absent a host declaration it is `true`,
+        # which is what this path did before the declaration existed.
+        self.offload = host_module.offload()
         self._census: dict[str, int] = {}
 
     # --- the contract -------------------------------------------------------
@@ -239,8 +283,11 @@ class Flux2KleinSdAdapter:
 
         The child holds the card from the moment it starts until it exits, and
         `run/server.lock` is held across that whole window. `--offload-to-cpu`
-        is unconditional: measured, it costs 0.6 s and returns 3254 MiB, which is
-        the difference between fitting beside the operator's desktop and not
+        is no longer unconditional: it follows the host declaration, because
+        offloading is a fact about the deployment's memory and not about the
+        model. `true` — what this path did before `host.yaml` existed, and what
+        it still does when there is none — costs 0.6 s and returns 3254 MiB, the
+        difference between fitting beside the operator's desktop and not
         (`docs/reference/flux2-klein.md`).
         """
         entry = self.entry
@@ -248,20 +295,9 @@ class Flux2KleinSdAdapter:
         destination = OUTPUT_DIR / f"{seed}-{width}x{height}.png"
         destination.unlink(missing_ok=True)
 
-        command = [
-            str(entry.components.cli),
-            "--diffusion-model", str(entry.checkpoint),
-            "--vae", str(entry.components.vae),
-            "--llm", str(entry.components.llm),
-            "-p", prompt,
-            "--cfg-scale", repr(float(entry.guidance)),
-            "--steps", str(int(steps)),
-            "-W", str(int(width)),
-            "-H", str(int(height)),
-            "-s", str(int(seed)),
-            "-o", str(destination),
-            "--offload-to-cpu",
-        ]
+        command = _command(
+            entry, prompt, width, height, seed, steps, destination, self.offload
+        )
 
         before = _measure(entry)
         lock, owned = _take_card()
@@ -310,11 +346,12 @@ class Flux2KleinSdAdapter:
                 f"census: the artefacts changed while sd-cli ran ({before} → {self._census})"
             )
         logger.info(
-            "sd-cli: %dx%d seed=%d steps=%d in %.2f s (census %s)",
+            "sd-cli: %dx%d seed=%d steps=%d offload=%s in %.2f s (census %s)",
             width,
             height,
             seed,
             steps,
+            "on" if self.offload else "off",
             elapsed,
             self._census,
         )

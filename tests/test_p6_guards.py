@@ -12,10 +12,10 @@ half of guard 4), and writes a synthetic entry for a stub adapter, loads it and
 renders it in a child process (guard 14). It costs seconds.
 
 `ServiceCase` needs the live service, so it owns its lifecycle: one server, started
-once in `setUpClass` and stopped by guard 2's own test. Guard 16 runs after it
-and starts servers of its own, because the instance mutex allows one at a time
-(guard 12). Every render the class makes is listed here with the guard that owns
-it:
+once in `setUpClass` and stopped by guard 2's own test. Guards 16, 13 and 17 run
+after it and start servers of their own, because the instance mutex allows one at
+a time (guard 12). Every render the class makes is listed here with the guard
+that owns it:
 
     renders                              guard
     4 x 1280x720 POST, same prompt/seed  guard 3 (owns); guard 5 borrows the bytes
@@ -32,15 +32,19 @@ it:
       plus 1 server with --ui            client, against a server started with --ui,
                                          because the page is where a second producer
                                          would have to live
+    2 x 1152x1152 POST, plus 2 servers guard 17 (owns); one under a tightened host
+                                         declaration, one with no host.yaml at all
 
-That is fifteen stills. Guard 3 costs four by protocol; guard 9 costs two because
+That is seventeen stills. Guard 3 costs four by protocol; guard 9 costs two because
 concurrency cannot be borrowed; guard 10 costs one base render; the CLI still
 doubles as guard 7's second half; guard 15 costs four because two step counts
 must each be proved stable and then proved different; guard 13 costs two because
 serialisation cannot be borrowed either, and it pays its own server because the
 shared one is started without `--ui` — the matrix must stay green on a server
-that never imports gradio. Nothing renders twice for the same guard. Guard 14
-writes one more still, 256×256, and it is the stub's: no model is loaded for it.
+that never imports gradio. Guard 17 costs two because the host is read at boot
+and there is no flag to point the server at another file, so the two cases are
+two boots. Nothing renders twice for the same guard. Guard 14 writes one more
+still, 256×256, and it is the stub's: no model is loaded for it.
 
 Ordering is explicit, not incidental: methods are numbered because unittest runs
 them alphabetically, and guard 3 has to see the first render after `start`.
@@ -1322,6 +1326,96 @@ def _ui_page(port: int, path: str = "/") -> tuple[int, str, bytes]:
             return int(response.status), response.headers.get("Content-Type", ""), response.read()
     except (urllib.error.URLError, OSError):
         return 0, "", b""
+
+
+# --- guard 17: the host may tighten, never widen ----------------------------
+#
+# `host.yaml` at the tree root is the deployment's declaration, and the server
+# reads that one path at boot — there is no flag to point it elsewhere, which is
+# the wiring the guard has to exercise. So the live halves rewrite the tree's
+# file, and the bytes the tree shipped are recorded here at import and asserted
+# back in `tearDownModule`: a guard that rewrites a declaration cannot leave the
+# tree changed, and the assertion is what makes that true rather than intended.
+
+HOST_FILE = ROOT / "host.yaml"
+"""The deployment's declaration — the one file guard 17 rewrites and restores."""
+
+HOST_DECLARATION = HOST_FILE.read_bytes() if HOST_FILE.is_file() else None
+"""What the tree declares, captured before any test can rewrite it."""
+
+G17_DIR = EVIDENCE / "g17"
+G17_KLEIN_ID = "flux2-klein-4b-gguf-q4"
+G17_KLEIN_ENTRY = ROOT / "model" / "entry.yaml"
+G17_PROMPT = "a brass compass on a wooden table"
+
+G17_SIDE = 512
+"""The synthetic entry's measured ceiling side (512² = 262,144 px)."""
+
+G17_DEFAULTS = 256
+"""Its default box (256² = 65,536 px) — deliberately under the ceiling."""
+
+G17_CAP = 196608
+"""The host cap the size half tightens to: above the default box, below the ceiling.
+
+That window is the only place a `max_pixels` may tighten, and neither shipped
+entry has one — both render their default box exactly at their measured ceiling
+(klein 1152² = 1,327,104; Z-Image 1280×720 = 921,600). This synthetic entry is
+what makes the tightening observable at all; the live half proves the same rule
+through the service on the step range, which both entries can tighten.
+"""
+
+
+def _g17_host_document(**overrides: object) -> dict:
+    """A host declaration this guard can change one field at a time."""
+    document: dict = {"id": "p6-guard-17", "vram_mib": 7857, "offload": True}
+    document.update(overrides)
+    return document
+
+
+def _g17_write_declaration(document: dict, where: pathlib.Path | None = None) -> pathlib.Path:
+    """Write a host declaration. Defaults to the guard's scratch folder."""
+    if where is None:
+        G17_DIR.mkdir(parents=True, exist_ok=True)
+        where = G17_DIR / "host.yaml"
+    where.parent.mkdir(parents=True, exist_ok=True)
+    where.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return where
+
+
+def _g17_restore_declaration() -> None:
+    """Put the tree's declaration back exactly as it was found."""
+    if HOST_DECLARATION is None:
+        HOST_FILE.unlink(missing_ok=True)
+        return
+    HOST_FILE.write_bytes(HOST_DECLARATION)
+
+
+def _g17_entry(name: str = "g17-entry.yaml") -> pathlib.Path:
+    """A synthetic entry whose default box leaves room under its ceiling."""
+    G17_DIR.mkdir(parents=True, exist_ok=True)
+    asset = G17_DIR / "g17-asset.bin"
+    asset.write_bytes(b"guard 17: a component no adapter here reads\n")
+    document = {
+        "id": "g17-stub-model",
+        "adapter": "g17stub",
+        "checkpoint": str(asset),
+        "components": {"weights": str(asset)},
+        "steps": 4,
+        "guidance": 1.0,
+        "limits": {"max_pixels": G17_SIDE * G17_SIDE, "steps": {"min": 3, "max": 9}},
+        "request_fields": ["prompt", "seed", "width", "height", "out", "steps"],
+        "expected_census": {"parameters": 1},
+        "defaults": {"width": G17_DEFAULTS, "height": G17_DEFAULTS, "format": "png"},
+        "warmup": {
+            "width": G17_DEFAULTS,
+            "height": G17_DEFAULTS,
+            "prompt": "warm up",
+            "seed": 0,
+        },
+    }
+    path = G17_DIR / name
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
 
 
 class ServiceCase(GuardCase):
@@ -3029,6 +3123,364 @@ class ServiceCase(GuardCase):
         self.assertFalse(STATE_FILE.exists(), "run/server.json survived stop")
         self.assertEqual(_server_pids(), [], "a server process survived stop")
 
+    # --- 15: guard 17 owns the host declaration, and it runs last -----------
+
+    def test_0970_guard17_the_host_may_tighten_never_widen(self) -> None:
+        """Guard 17: a host may tighten the deployment's limits, never widen them.
+
+        Three halves, and one more subTest for the other field the same
+        declaration carries.
+
+        1. **A host that widens is refused at boot**, naming the bound: a ceiling
+           above the served entry's measured one, a step range reaching outside
+           the entry's, and — the same family — a ceiling below the box that
+           entry renders by default. None of the three may start a server, and
+           each message names the offending value and what bounds it.
+        2. **A host that tightens changes what a request may ask for.** The
+           tightened value is refused above the cap at the door, before any
+           adapter call, and the value inside it is served. The size half runs on
+           a synthetic entry (neither shipped entry has room to tighten a
+           ceiling: both render their default box exactly at their measured one),
+           and the live half runs through the service on the step range, which
+           both entries can tighten.
+        3. **A tree with no `host.yaml` still serves the entry's own limits**:
+           the declaration is moved aside, the promoted entry boots, and its own
+           default box is served — portability is a tree without a host.
+        4. **`offload` rides the same declaration**: it comes from the host module
+           and not from the adapter, `true` adds `--offload-to-cpu` and `false`
+           leaves it out.
+
+        It runs after guards 2, 16 and 13 stopped their servers, and it pays two
+        boots of its own because the host is read at boot and there is no flag to
+        point the server at another file — that is the wiring, and the file's
+        shipped bytes are restored in `finally` and asserted in `tearDownModule`.
+        """
+        from coltman_images import host as host_module
+        from coltman_images.entry import load_entry
+        from coltman_images.render import _plan
+        from coltman_images.adapters.flux2klein_sd import _command
+
+        G17_DIR.mkdir(parents=True, exist_ok=True)
+        entry = load_entry(G17_KLEIN_ENTRY)
+        measured_cap = entry.max_pixels
+        default_width = int(entry.defaults["width"])
+        default_height = int(entry.defaults["height"])
+        default_area = default_width * default_height
+        offload_before = _log_count("offload=on")
+
+        # 1. A host that widens is refused, and the message names the bound.
+        def refusal(document: dict, name: str):
+            declared = _g17_write_declaration(document, G17_DIR / name)
+            with self.assertRaises(host_module.HostError) as caught:
+                host_module.effective(entry, host_module.load_host(declared))
+            return str(caught.exception)
+
+        widening = {
+            "ceiling": refusal(
+                _g17_host_document(
+                    limits={
+                        "max_pixels": measured_cap * 2,
+                        "steps": {"min": entry.steps_min, "max": entry.steps_max},
+                    }
+                ),
+                "widens-ceiling.yaml",
+            ),
+            "ceiling-below-defaults": refusal(
+                _g17_host_document(
+                    limits={
+                        "max_pixels": default_area - 16 * 16,
+                        "steps": {"min": entry.steps_min, "max": entry.steps_max},
+                    }
+                ),
+                "conflicts-with-defaults.yaml",
+            ),
+            "steps": refusal(
+                _g17_host_document(
+                    limits={
+                        "max_pixels": measured_cap,
+                        "steps": {"min": entry.steps_min - 1, "max": entry.steps_max + 1},
+                    }
+                ),
+                "widens-steps.yaml",
+            ),
+        }
+        malformed = refusal(
+            _g17_host_document(extra=1),
+            "malformed.yaml",
+        )
+
+        # 2a. The size half, on an entry with room between its default box and
+        #     its ceiling: the tightened cap is what the door refuses against.
+        stub_entry = load_entry(_g17_entry())
+        tight_host = host_module.load_host(
+            _g17_write_declaration(
+                _g17_host_document(limits={"max_pixels": G17_CAP, "steps": {"min": 3, "max": 9}}),
+                G17_DIR / "tightens-cap.yaml",
+            )
+        )
+        tight_limits = host_module.effective(stub_entry, tight_host)
+        refused_size = stub_entry.accepts(
+            {"prompt": "x", "width": G17_SIDE, "height": G17_SIDE}, tight_limits
+        )
+        served_size = stub_entry.accepts({"prompt": "x", "width": 384, "height": 384}, tight_limits)
+        with self.assertRaises(ValueError) as planned:
+            _plan(stub_entry, "x", G17_SIDE, G17_SIDE, False, tight_limits)
+        entry_limits = host_module.effective(stub_entry, None)
+        unbound_size = stub_entry.accepts(
+            {"prompt": "x", "width": G17_SIDE, "height": G17_SIDE}, entry_limits
+        )
+
+        # 4. The same declaration's other field: the child's own command line.
+        sample = G17_DIR / "g17-child.png"
+        command_on = _command(entry, G17_PROMPT, 1024, 1024, 7, 4, sample, True)
+        command_off = _command(entry, G17_PROMPT, 1024, 1024, 7, 4, sample, False)
+
+        _put(
+            "guard17",
+            {
+                "refusals": {**widening, "malformed": malformed},
+                "entry": {
+                    "id": entry.id,
+                    "ceiling": measured_cap,
+                    "defaults": [default_width, default_height],
+                    "steps": [entry.steps_min, entry.steps_max, entry.steps],
+                },
+                "size_half": {
+                    "entry_ceiling": stub_entry.max_pixels,
+                    "entry_defaults": G17_DEFAULTS,
+                    "host_cap": G17_CAP,
+                    "effective": tight_limits.max_pixels,
+                    "refused": refused_size,
+                    "served": served_size,
+                    "plan_refusal": str(planned.exception),
+                    "without_host": entry_limits.max_pixels,
+                    "without_host_accepted": unbound_size,
+                },
+                "offload": {
+                    "true_has_flag": "--offload-to-cpu" in command_on,
+                    "false_has_flag": "--offload-to-cpu" in command_off,
+                    "tail_true": command_on[-1],
+                    "tail_false": command_off[-1],
+                },
+            }
+        )
+
+        print(
+            f"guard 17a: a ceiling of {measured_cap * 2} px refused against the entry's "
+            f"{measured_cap} px measurement"
+        )
+        print(
+            f"guard 17a: a cap of {default_area - 16 * 16} px refused against the "
+            f"{default_width}x{default_height} default box ({default_area} px)"
+        )
+        print(
+            f"guard 17a: steps {entry.steps_min - 1}..{entry.steps_max + 1} refused against the "
+            f"entry's {entry.steps_min}..{entry.steps_max}"
+        )
+        print(f"guard 17a: a malformed declaration refused — {malformed}")
+        print(
+            f"guard 17b: cap {G17_CAP} on a {stub_entry.max_pixels} px entry — "
+            f"{G17_SIDE}x{G17_SIDE} refused ({str(planned.exception)[:90]}…), 384x384 accepted"
+        )
+        print(
+            "guard 17d: offload true → "
+            f"{'--offload-to-cpu' in command_on}, false → {'--offload-to-cpu' in command_off}"
+        )
+
+        with self.subTest(part="17a: a host that widens is refused"):
+            self.assertIn(str(measured_cap * 2), widening["ceiling"])
+            self.assertIn(str(measured_cap), widening["ceiling"])
+            self.assertIn("never widen", widening["ceiling"])
+            self.assertIn(str(default_area - 16 * 16), widening["ceiling-below-defaults"])
+            self.assertIn(str(default_area), widening["ceiling-below-defaults"])
+            self.assertIn("defaults", widening["ceiling-below-defaults"])
+            self.assertIn(f"{entry.steps_min - 1}..{entry.steps_max + 1}", widening["steps"])
+            self.assertIn(f"{entry.steps_min}..{entry.steps_max}", widening["steps"])
+            self.assertIn("never widen", widening["steps"])
+            self.assertIn("unknown field", malformed)
+
+        with self.subTest(part="17b: a host that tightens is enforced at the door"):
+            self.assertEqual(tight_limits.max_pixels, G17_CAP, "the effective cap is not the host's")
+            self.assertTrue(refused_size, "a size above the host's cap was accepted")
+            self.assertIn(str(G17_CAP), " ".join(refused_size), "the refusal does not name the cap")
+            self.assertIn("host.yaml", " ".join(refused_size), "the refusal does not name which declaration binds")
+            self.assertIn(str(G17_CAP), str(planned.exception), "the plan does not refuse against the cap")
+            self.assertEqual(served_size, [], "a size under the host's cap was refused")
+            # The same request without a host declaration is the entry's own
+            # ceiling, so the tightening is what changed the answer.
+            self.assertEqual(entry_limits.max_pixels, stub_entry.max_pixels)
+            self.assertEqual(unbound_size, [], "the entry's own ceiling refused its own box")
+
+        with self.subTest(part="17d: offload is carried, not hardcoded"):
+            self.assertTrue(
+                "--offload-to-cpu" in command_on, "offload: true did not reach the child's command"
+            )
+            self.assertNotIn(
+                "--offload-to-cpu", command_off, "offload: false still asked the child to offload"
+            )
+            self.assertEqual(
+                command_on[:-1], command_off, "the two command lines differ by more than the flag"
+            )
+
+        # One instance per card (guard 12), as guards 13 and 16 do under `-k`.
+        if _state() is not None or _server_pids():
+            cleared = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and (_state() is not None or _server_pids()):
+                time.sleep(0.5)
+            self.assertEqual(_server_pids(), [], f"the shared server would not stop: {cleared.stderr}")
+            self.assertIsNone(_state(), "the shared server left its state file behind")
+
+        def _stop_server() -> None:
+            stopped = _cli("stop", timeout=180)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                if not STATE_FILE.exists() and not _server_pids() and _health()[0] != 200:
+                    return
+                time.sleep(0.5)
+            self.fail(f"the server would not stop: {stopped.stderr}")
+
+        live: dict[str, object] = {}
+        try:
+            # 2b. The live half: the tightened range is what the door enforces.
+            tightened_before = _log_count("limits tightened by host.yaml")
+            _g17_write_declaration(
+                _g17_host_document(
+                    limits={
+                        "max_pixels": measured_cap,
+                        "steps": {"min": entry.steps_min + 2, "max": entry.steps_max},
+                    }
+                ),
+                HOST_FILE,
+            )
+            tightened_steps = (entry.steps_min + 2, entry.steps_max)
+            declared = host_module.effective(entry, host_module.load_host())
+            self.assertEqual(
+                (declared.steps_min, declared.steps_max),
+                tightened_steps,
+                "the tightened range is not the intersection the host declared",
+            )
+
+            started = _cli("start", "--model", G17_KLEIN_ID, timeout=600)
+            print(f"guard 17b: start under a tightened host → exit {started.returncode}")
+            self.assertEqual(started.returncode, 0, f"start under a tightened host failed: {started.stderr}")
+            status, health = _health()
+            self.assertEqual(status, 200, f"/health did not answer: {health}")
+
+            refused_status, refused_body = _generate(
+                {"prompt": G17_PROMPT, "steps": entry.steps_min}
+            )
+            served_status, served_body = _generate(
+                {"prompt": G17_PROMPT, "out": str(G17_DIR / "g17-tightened.png")}
+            )
+            live = {
+                "host": {
+                    "limits": {"max_pixels": measured_cap, "steps": dict(zip(("min", "max"), tightened_steps))}
+                },
+                "refused": {"status": refused_status, "body": refused_body},
+                "served": {"status": served_status, "body": served_body},
+                "tightened_logged": _log_count("limits tightened by host.yaml") - tightened_before,
+            }
+            print(
+                f"guard 17b: steps {entry.steps_min} → HTTP {refused_status}; "
+                f"the default request → HTTP {served_status} at "
+                f"{served_body.get('width')}x{served_body.get('height')} in {served_body.get('render_s')} s"
+            )
+
+            self.assertEqual(
+                refused_status, 400, f"a step below the host's range was not refused: {refused_body}"
+            )
+            message = str(refused_body.get("error", {}).get("message", ""))
+            self.assertIn(
+                f"{tightened_steps[0]}..{tightened_steps[1]}",
+                message,
+                f"the refusal does not name the tightened range: {message}",
+            )
+            self.assertIn("host.yaml", message, f"the refusal does not say which declaration binds: {message}")
+            self.assertEqual(
+                served_status, 200, f"a request inside the tightened range failed: {served_body}"
+            )
+            self.assertEqual(
+                (served_body.get("width"), served_body.get("height")),
+                (default_width, default_height),
+                "the served request is not the entry's default box",
+            )
+            self.assertEqual(
+                served_body.get("steps"),
+                entry.steps,
+                "an absent step count did not land on the entry's default",
+            )
+            self.assertGreater(float(served_body.get("render_s", 0)), 0.0)
+            self.assertGreaterEqual(
+                int(live["tightened_logged"]),
+                1,
+                "the boot did not log the tightening it applied",
+            )
+            self.assertGreaterEqual(
+                _log_count("offload=on") - offload_before,
+                1,
+                "the child ran without the host's offload flag",
+            )
+            _stop_server()
+
+            # 3. A tree with no host.yaml still serves the entry's own limits.
+            HOST_FILE.unlink()
+            self.assertIsNone(host_module.load_host(), "the declaration survived its own removal")
+            without = host_module.effective(entry, None)
+            self.assertEqual(
+                (without.max_pixels, without.steps_min, without.steps_max),
+                (entry.max_pixels, entry.steps_min, entry.steps_max),
+                "with no host declaration the entry's own limits did not apply",
+            )
+            portable = _cli("start", "--model", G17_KLEIN_ID, timeout=600)
+            print(f"guard 17c: start with no host.yaml → exit {portable.returncode}")
+            self.assertEqual(portable.returncode, 0, f"start without a host failed: {portable.stderr}")
+            portable_status, portable_body = _generate(
+                {"prompt": G17_PROMPT, "out": str(G17_DIR / "g17-portable.png")}
+            )
+            live.update(
+                {
+                    "without_host": {
+                        "start_exit": portable.returncode,
+                        "status": portable_status,
+                        "body": portable_body,
+                        "limits": {
+                            "max_pixels": without.max_pixels,
+                            "steps": [without.steps_min, without.steps_max],
+                        },
+                    }
+                }
+            )
+            print(
+                f"guard 17c: the promoted entry served "
+                f"{portable_body.get('width')}x{portable_body.get('height')} at "
+                f"{portable_body.get('steps')} steps in {portable_body.get('render_s')} s "
+                "with no host declaration"
+            )
+            self.assertEqual(
+                portable_status, 200, f"the promoted entry did not serve without a host: {portable_body}"
+            )
+            self.assertEqual(
+                (portable_body.get("width"), portable_body.get("height")),
+                (default_width, default_height),
+                "the served request is not the box the entry's own defaults declare",
+            )
+            self.assertTrue(
+                pathlib.Path(str(portable_body.get("out"))).is_file(), "the portable still was not written"
+            )
+            _stop_server()
+        finally:
+            _g17_restore_declaration()
+            if _state() is not None or _server_pids():
+                _stop_server()
+
+        _put("guard17.live", live)
+        self.assertEqual(
+            HOST_FILE.read_bytes() if HOST_FILE.is_file() else None,
+            HOST_DECLARATION,
+            "guard 17 left the tree's host declaration changed",
+        )
+
 
 # --- the fixture's raw steps -----------------------------------------------
 
@@ -3109,6 +3561,15 @@ def tearDownModule() -> None:
         leftovers.append(f"a listener on {BIND}:{PORT}")
     if leftovers:
         raise AssertionError("the suite did not leave the machine as it found it: " + ", ".join(leftovers))
+
+    # Guard 17 rewrites `host.yaml` because the server reads that one path at
+    # boot, so the declaration is part of the state this suite must not change.
+    current = HOST_FILE.read_bytes() if HOST_FILE.is_file() else None
+    if current != HOST_DECLARATION:
+        raise AssertionError(
+            "the suite rewrote host.yaml and did not restore it — the deployment's declaration "
+            "is not test state"
+        )
 
 
 if __name__ == "__main__":

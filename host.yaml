@@ -1,0 +1,47 @@
+# What this deployment can afford — the machine's declaration, kept apart from
+# what a model is (protocol sections 3, 6.1 and 7).
+#
+# The model's entry declares what the model is: its assets, its sampling regime,
+# its defaults, and the largest box it has been measured to render on this card.
+# This file declares the deployment around it: how much device memory the card
+# offers, and whether the `ggml` path may offload to the CPU. The server reads it
+# at boot, exactly as it reads the entry. There is no flag for it, and a tree
+# without it is not broken — the entry's own limits apply and everything runs as
+# it did before this file existed.
+#
+# `limits` is optional and may only tighten. A deployment that declares it says
+#
+#   limits:
+#     max_pixels: <at most the served entry's measured ceiling, and at least the
+#                  area of the box that entry renders by default>
+#     steps: {min: <at least the entry's min>, max: <at most the entry's max>}
+#
+# and the system serves the intersection. A ceiling above the entry's, or a step
+# range reaching outside it, is refused at boot: a host may tighten what this
+# deployment renders, never widen it, because the entry's number is a measurement
+# and a host is not allowed to promise a box nobody rendered. A cap below the
+# entry's default box is refused too, rather than silently shrinking every
+# default request.
+#
+# This tree declares no `limits`, on purpose, and the arithmetic is why. Both
+# entries render their default box exactly at their measured ceiling — FLUX.2
+# [klein] at 1152x1152 = 1,327,104 px, Z-Image at 1280x720 = 921,600 px — so a
+# cap that tightens either one is below that entry's default box and would be
+# refused at boot, and a cap that fits both does not exist: klein's default box
+# is larger than Z-Image's whole measured ceiling. The step ranges have the same
+# shape — 4..8 with a default of 8, and 8..16 with a default of 12 — so the range
+# inside both would be {8}, which does not contain Z-Image's default 12, and any
+# wider range reaches outside one entry's measurement. A `limits` block here
+# would therefore decide this deployment down to one entry, and the tree serves
+# both. What remains — the deployment's memory and its offload policy — is below.
+id: this-deployment
+
+# torch-usable device memory on this card, in MiB. Declared for what it is: a
+# reading of the machine, not a budget the system enforces. The measurements
+# behind the entries are recorded against it (docs/reference/).
+vram_mib: 7857
+
+# Ask the `ggml` child for `--offload-to-cpu`. Measured, it costs 0.6 s and
+# returns 3254 MiB, which is what lets the child fit beside the operator's
+# desktop. `false` leaves the flag out and keeps the quantised pair resident.
+offload: true

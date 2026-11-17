@@ -71,6 +71,7 @@ from urllib.parse import urlsplit
 from . import render as render_module
 from .adapter import AdapterError, load_adapter
 from .entry import PROJECT_ROOT, Entry, EntryError, find_entry, load_entry
+from .host import Effective, Host, HostError, effective, load_host
 from .upscale import UpscaleError, load_declaration
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,8 @@ class WarmServer:
 
     def __init__(self) -> None:
         self.entry: Entry | None = None
+        self.host: Host | None = None
+        self.limits: Effective | None = None
         self.declaration: Any = None
         self.adapter: Any = None
         self.census: dict[str, int] = {}
@@ -232,11 +235,22 @@ class WarmServer:
         `model/entry.yaml`, the promoted default. Raises `EntryError` for
         anything the entry declares badly or cannot find — the caller turns that
         into exit 3, before any GPU work.
+
+        The host declaration is read here too, after the entry and before the
+        adapter: `host.yaml` says what this deployment can afford, and
+        `host.effective` intersects it with what the entry measured. A host that
+        would widen a limit, or that cannot afford the entry's default box, is
+        `HostError` — exit 3 at boot, naming the numbers, and before any weight
+        is loaded (protocol section 6.1).
         """
         self.started_at = _utc_now()
         began = time.perf_counter()
 
         entry = load_entry(entry_path)
+        # The host is read at boot and nowhere else, exactly as the entry is:
+        # there is no flag for it and no per-request declaration of the machine.
+        host = load_host()
+        limits = effective(entry, host)
         # The stage's declaration is validated here too: its weights are a
         # declared asset like any other, so a missing one is exit 3 at start
         # rather than a 500 on the first request that needs it.
@@ -245,6 +259,8 @@ class WarmServer:
         adapter = load_adapter(entry)
 
         self.entry = entry
+        self.host = host
+        self.limits = limits
         self.declaration = declaration
         self.adapter = adapter
 
@@ -253,10 +269,29 @@ class WarmServer:
             entry.id,
             entry.steps,
             entry.guidance,
-            entry.max_pixels,
+            limits.max_pixels,
             declaration.id,
             declaration.scale,
         )
+        logger.info(
+            "boot: host %s",
+            (
+                "none — the entry's own limits apply"
+                if host is None
+                else f"{host.id}, {host.vram_mib} MiB, offload {'on' if host.offload else 'off'}"
+            ),
+        )
+        if host is not None and host.declares_limits:
+            logger.info(
+                "boot: limits tightened by host.yaml — %d px (entry measured %d), steps %d..%d "
+                "(entry declares %d..%d)",
+                limits.max_pixels,
+                entry.max_pixels,
+                limits.steps_min,
+                limits.steps_max,
+                entry.steps_min,
+                entry.steps_max,
+            )
         # The adapter loads the warm pieces and establishes the census before
         # the port binds. A name this system does not have is an undeclared
         # asset (exit 3); a census that does not match the entry fails guard 4
@@ -284,7 +319,9 @@ class WarmServer:
         prompt = str(warm["prompt"])
         seed = int(warm["seed"])
 
-        problems = entry.accepts({"prompt": prompt, "width": width, "height": height, "seed": seed})
+        problems = entry.accepts(
+            {"prompt": prompt, "width": width, "height": height, "seed": seed}, self.limits
+        )
         if problems:
             raise EntryError("warmup: the entry's own warm-up values are refused: " + "; ".join(problems))
 
@@ -297,6 +334,7 @@ class WarmServer:
             height=height,
             adapter=self.adapter,
             write=False,
+            limits=self.limits,
         )
         elapsed = time.perf_counter() - began
         self.census = dict(result["census"])
@@ -338,6 +376,7 @@ class WarmServer:
                         out=job.out,
                         upscale=job.upscale,
                         adapter=self.adapter,
+                        limits=self.limits,
                     )
                     logger.info(
                         "served: %s seed=%d render_s=%.2f load_s=%.2f",
@@ -423,8 +462,11 @@ class WarmServer:
 
         # Everything that can refuse without touching the card refuses here,
         # before the queue, so a malformed request never reaches the worker and
-        # therefore never reaches the GPU (guard 1).
-        problems = entry.accepts(request)
+        # therefore never reaches the GPU (guard 1). The limits are the
+        # deployment's effective ones — the intersection of host.yaml and the
+        # entry that `boot` resolved — so a host that tightens is enforced at
+        # this door and nowhere later (protocol section 6.1, guard 17).
+        problems = entry.accepts(request, self.limits)
         if problems:
             raise InvalidRequest("; ".join(problems))
 
@@ -436,7 +478,7 @@ class WarmServer:
             # refuses a request that did not permit the synthesis. Both are
             # validation, so both land as 400 rather than mid-render.
             render_module._plan(
-                entry, prompt, width, height, bool(request.get("upscale", False))
+                entry, prompt, width, height, bool(request.get("upscale", False)), self.limits
             )
         except ValueError as exc:
             raise InvalidRequest(str(exc).removeprefix("invalid request: ")) from None
@@ -1091,7 +1133,7 @@ def _serve(args: argparse.Namespace, ui_port: int | None = None) -> int:
         return EXIT_ASSET_MISSING
     try:
         app.boot(entry_path)
-    except (AdapterError, EntryError, UpscaleError) as exc:
+    except (AdapterError, EntryError, HostError, UpscaleError) as exc:
         logger.error("%s", exc)
         return EXIT_ASSET_MISSING
     except Exception:
