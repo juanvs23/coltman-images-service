@@ -4,6 +4,12 @@ Runs under the production interpreter and the declared command:
 
     .venv/bin/python -m unittest discover -s tests -v
 
+Every test runs under a per-test deadline — 300 s, `COLTMAN_TEST_DEADLINE_S` to change
+it — that turns a hang into a failure naming the test instead of a run nobody can end,
+and `tearDownModule` kills any `coltman_images.server` that outlived its guard and fails
+if it found one. A guard that can hang the matrix, or leave the card taken, is a guard
+whose green means nothing.
+
 Two classes, because the matrix has two kinds of guard.
 
 `ContractCase` needs no service: it reads the tree (guard 8), asks a subprocess
@@ -63,8 +69,10 @@ import datetime
 import filecmp
 import hashlib
 import json
+import os
 import pathlib
 import re
+import signal
 import statistics
 import struct
 import subprocess
@@ -153,6 +161,50 @@ ERR: dict[str, str] = {}
 """Why a key was never measured. A guard whose input is missing fails with this text."""
 
 
+# --- the per-test deadline --------------------------------------------------
+
+DEADLINE_S = float(os.environ.get("COLTMAN_TEST_DEADLINE_S", "300"))
+"""One test's budget, 300 s unless `COLTMAN_TEST_DEADLINE_S` sets another number of seconds."""
+
+
+class TestDeadline(AssertionError):
+    """A test overran its budget: it hung, it did not merely run long.
+
+    An `AssertionError` and not a bare exception, because unittest reports an
+    `AssertionError` as a failure attributed to the test that raised it — the run
+    names what hung instead of stopping on a traceback from the harness.
+    """
+
+
+def _deadline_message(label: str, started: float, budget: float) -> str:
+    return (
+        f"{label} overran the matrix's per-test deadline of {budget:g} s after "
+        f"{time.perf_counter() - started:.1f} s: it hung, it did not merely run long. "
+        f"Where the answer lives: run/server.log (the last thing the service did) and "
+        f"`ss -tnp` (the socket it is waiting on)."
+    )
+
+
+def _arm_deadline(label: str, started: float, budget: float | None = None) -> None:
+    """Turn an overrun into a failure in this thread, instead of a hang for the whole run.
+
+    The runners execute every test in the main thread, which is the thread `SIGALRM`
+    is delivered to. A plain `signal.alarm`-style timer is enough here: the budget is
+    seconds, not deadlines of sub-second precision.
+    """
+    seconds = DEADLINE_S if budget is None else budget
+
+    def _trip(_signum: int, _frame: object) -> None:
+        raise TestDeadline(_deadline_message(label, started, seconds))
+
+    signal.signal(signal.SIGALRM, _trip)
+    signal.setitimer(signal.ITIMER_REAL, max(0.1, seconds))
+
+
+def _disarm_deadline() -> None:
+    signal.setitimer(signal.ITIMER_REAL, 0.0)
+
+
 # --- small plumbing ---------------------------------------------------------
 
 
@@ -207,18 +259,101 @@ def _cli(*args: str, timeout: float = 600.0) -> subprocess.CompletedProcess:
 
 
 def _server_pids() -> list[int]:
-    """Pids whose argv is `python … -m coltman_images.server …`, matched on NULs."""
+    """Every live process that is really this server, matched the way the server matches itself.
+
+    `coltman_images.server._other_server_pids` is the authority on what a server is:
+    the interpreter — the first token's basename starts with `python` — and
+    `coltman_images.server` as one of its own argument tokens. Matching the text
+    anywhere on a command line would count the shell that ran the check, which is
+    exactly the mistake the server's own scan was written to avoid.
+    """
     pids: list[int] = []
     for entry in pathlib.Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
         try:
-            argv = (entry / "cmdline").read_bytes()
+            raw = (entry / "cmdline").read_bytes()
         except OSError:
             continue
-        if b"\x00-m\x00coltman_images.server\x00" in argv:
-            pids.append(int(entry.name))
+        argv = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        if not argv:
+            continue
+        if not os.path.basename(argv[0]).startswith("python"):
+            continue
+        if "coltman_images.server" not in argv:
+            continue
+        pids.append(int(entry.name))
     return sorted(pids)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _terminate(pids: list[int], grace: float = 15.0) -> list[str]:
+    """Kill the servers in `pids`: SIGTERM, then SIGKILL for what outlives the grace.
+
+    A server holds `run/server.lock` for its whole life, so an orphan is not a stray
+    process — it is the card taken and every later `start` exiting 4 with "another
+    instance already owns this card" for a reason nobody caused. It is killed either
+    way; whether it existed is a separate question, and the caller reports it.
+    """
+    notes: list[str] = []
+    targets = [pid for pid in pids if _pid_alive(pid)]
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            notes.append(f"SIGTERM {pid}")
+        except OSError as exc:
+            notes.append(f"SIGTERM {pid} failed: {exc}")
+
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline and any(_pid_alive(pid) for pid in targets):
+        time.sleep(0.2)
+
+    for pid in [pid for pid in targets if _pid_alive(pid)]:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            notes.append(f"SIGKILL {pid}")
+        except OSError as exc:
+            notes.append(f"SIGKILL {pid} failed: {exc}")
+
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline and any(_pid_alive(pid) for pid in targets):
+        time.sleep(0.2)
+    return notes
+
+
+def _stop_if_running(grace: float = 45.0) -> None:
+    """Stop whatever server is up and wait until the port, the state file and the pid are gone.
+
+    Registered with `addCleanup` before a test's first `start`, so a failing
+    assertion cannot leave the card taken for the rest of the matrix. It never
+    raises: the guard's own assertions are the ones that speak, and a cleanup that
+    also failed would only hide which one did.
+    """
+    if _state() is None and not _server_pids():
+        return
+    try:
+        _cli("stop", timeout=180)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if not STATE_FILE.exists() and not _server_pids() and _health()[0] != 200:
+            return
+        time.sleep(0.5)
+    remaining = _server_pids()
+    if remaining:
+        _terminate(remaining)
 
 
 def _state() -> dict | None:
@@ -290,12 +425,14 @@ def _write_evidence() -> pathlib.Path:
 
 
 class GuardCase(unittest.TestCase):
-    """Shared access to the recorded observations, and per-test timing."""
+    """Shared access to the recorded observations, and per-test timing under a deadline."""
 
     def setUp(self) -> None:
         self._t0 = time.perf_counter()
+        _arm_deadline(self._testMethodName, self._t0)
 
     def tearDown(self) -> None:
+        _disarm_deadline()
         _put(f"duration.{self._testMethodName}", round(time.perf_counter() - self._t0, 2))
 
     def obs(self, key: str):
@@ -1545,32 +1682,38 @@ class ServiceCase(GuardCase):
     def setUpClass(cls) -> None:
         EVIDENCE.mkdir(parents=True, exist_ok=True)
         FILES.mkdir(parents=True, exist_ok=True)
+        # The fixture pays a boot, so it gets the same budget as a test: a `start`
+        # that never returns must fail here by name instead of hanging the matrix.
+        _arm_deadline(f"{cls.__name__}.setUpClass", time.perf_counter())
         try:
-            _preflight()
-        except Exception as exc:  # noqa: BLE001 — recorded, then reported per guard
-            _record_error("fixture", exc)
-            return
+            try:
+                _preflight()
+            except Exception as exc:  # noqa: BLE001 — recorded, then reported per guard
+                _record_error("fixture", exc)
+                return
 
-        # Guard 2, first half: a client with no server must not start one.
-        try:
-            _put("guard02.generate_without_server", _generate_without_server())
-        except Exception as exc:  # noqa: BLE001
-            _record_error("guard02.generate_without_server", exc)
+            # Guard 2, first half: a client with no server must not start one.
+            try:
+                _put("guard02.generate_without_server", _generate_without_server())
+            except Exception as exc:  # noqa: BLE001
+                _record_error("guard02.generate_without_server", exc)
 
-        try:
-            _put("guard02.start", _start())
-        except Exception as exc:  # noqa: BLE001
-            _record_error("guard02.start", exc)
-            return
+            try:
+                _put("guard02.start", _start())
+            except Exception as exc:  # noqa: BLE001
+                _record_error("guard02.start", exc)
+                return
 
-        try:
-            _put("guard02.health", _health())
-            _put("guard02.state", _state())
-            _put("baseline.render_count", _render_count())
-            _put("baseline.render_failure_count", _render_failure_count())
-            _put("baseline.pids", _server_pids())
-        except Exception as exc:  # noqa: BLE001
-            _record_error("guard02.after_start", exc)
+            try:
+                _put("guard02.health", _health())
+                _put("guard02.state", _state())
+                _put("baseline.render_count", _render_count())
+                _put("baseline.render_failure_count", _render_failure_count())
+                _put("baseline.pids", _server_pids())
+            except Exception as exc:  # noqa: BLE001
+                _record_error("guard02.after_start", exc)
+        finally:
+            _disarm_deadline()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -1814,7 +1957,12 @@ class ServiceCase(GuardCase):
                 stop_polling.wait(0.5)
 
         poller = threading.Thread(target=poll, name="p6-depth", daemon=True)
-        workers = [threading.Thread(target=fire, args=(label,), name=f"p6-{label}") for label in requests]
+        # Daemon threads: if the deadline aborts this test mid-join, a worker blocked
+        # on a socket must not keep the interpreter alive past the failure.
+        workers = [
+            threading.Thread(target=fire, args=(label,), name=f"p6-{label}", daemon=True)
+            for label in requests
+        ]
         poller.start()
         for worker in workers:
             worker.start()
@@ -2480,7 +2628,10 @@ class ServiceCase(GuardCase):
         declared_before = _log_count("idle: declared")
         retiring_before = _log_count("— retiring")
 
-        # 2. A declared period the system accepts, and a warm server.
+        # 2. A declared period the system accepts, and a warm server. The stop is
+        #    registered before the start: a failing assertion below must not leave
+        #    the card taken for the rest of the matrix.
+        self.addCleanup(_stop_if_running)
         started = _cli("start", "--idle-timeout", f"{timeout:g}", "--model", ZIMAGE_ID, timeout=600)
         print(f"guard 16: start --idle-timeout {timeout:g} → exit {started.returncode}; {started.stdout.strip()}")
         _put("guard16.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
@@ -3069,6 +3220,9 @@ class ServiceCase(GuardCase):
             "free it first, or the guard would be measuring somebody else's page",
         )
 
+        # The stop is registered before the start: a failing assertion below must
+        # not leave the page's process, and the card, taken for the rest of the matrix.
+        self.addCleanup(_stop_if_running)
         started = _cli("start", "--ui", "--model", ZIMAGE_ID, timeout=600)
         print(f"guard 13: start --ui → exit {started.returncode}; {started.stdout.strip()}")
         _put("guard13.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
@@ -3155,7 +3309,12 @@ class ServiceCase(GuardCase):
                 stop_polling.wait(0.5)
 
         poller = threading.Thread(target=poll, name="p13-depth", daemon=True)
-        workers = [threading.Thread(target=fire, args=(label,), name=f"p13-{label}") for label in seeds]
+        # Daemon, for the same reason as guard 9: a deadline that aborts the join must
+        # not be held open by a worker still blocked on the page's socket.
+        workers = [
+            threading.Thread(target=fire, args=(label,), name=f"p13-{label}", daemon=True)
+            for label in seeds
+        ]
         poller.start()
         for worker in workers:
             worker.start()
@@ -3966,18 +4125,30 @@ def _force_clean() -> list[str]:
 
 
 def tearDownModule() -> None:
-    """Write the run's evidence, then refuse to leave the machine changed."""
+    """Write the run's evidence, then refuse to leave the machine changed.
+
+    A server that outlived its guard is killed here before anything is asserted, so
+    it cannot poison the next run: it holds `run/server.lock`, and every later
+    `start` would exit 4 with "another instance already owns this card" for a reason
+    no product caused. Killing it is not the same as forgiving it — a leaked server
+    is reported below, and the run fails.
+    """
     notes = _force_clean()
+    leaked = _server_pids()
+    if leaked:
+        notes.extend(_terminate(leaked))
     _put("teardown", notes)
     path = _write_evidence()
     print(f"p6: evidence written to {path.relative_to(ROOT)}")
 
     leftovers = []
+    if leaked:
+        leftovers.append(f"{len(leaked)} server process(es) outlived their guard: {leaked}")
     if STATE_FILE.exists():
         leftovers.append("run/server.json")
     remaining = _server_pids()
     if remaining:
-        leftovers.append(f"server process(es) {remaining}")
+        leftovers.append(f"server process(es) survived termination: {remaining}")
     if _health()[0] == 200:
         leftovers.append(f"a listener on {BIND}:{PORT}")
     if leftovers:
@@ -3990,6 +4161,14 @@ def tearDownModule() -> None:
         raise AssertionError(
             "the suite rewrote host.yaml and did not restore it — the deployment's declaration "
             "is not test state"
+        )
+
+    # The refusal this file exists for: the matrix does not finish with a server on
+    # the card. Asserted last, on a fresh scan, after every kill above.
+    survivors = _server_pids()
+    if survivors:
+        raise AssertionError(
+            f"the matrix finished with {len(survivors)} coltman_images.server process(es) alive: {survivors}"
         )
 
 
