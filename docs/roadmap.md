@@ -215,6 +215,32 @@ be an alpha channel: this path writes RGB PNGs and the still renders the
 checkerboard. And how more than one reference behaves: nothing here has rendered
 two at once, and ten is the model's documented count rather than a measured limit.
 
+## The next measurements — styles, hands, faces
+
+Written down on 2026-11-17 so the next session starts where this one stopped. **None of it is
+code**: the architecture is in place and what follows is measuring what it produces.
+
+**Styles.** The operator keeps a style catalogue of seventeen frames, each a prompt with its own
+revision history and verdicts, and they were written for Z-Image at `guidance 0.0` — the frames
+themselves say so ("the negative stays empty: inert on this distilled family"). Rendering them
+through **klein at 1152×1152 and eight steps** answers two questions at once: whether the
+promoted model holds a register the operator has already tuned, and **which styles break**. The
+second is the only honest trigger for seeking a LoRA. Sixteen or seventeen renders, about twenty
+seconds each, and the evidence belongs in the test folder of the model under test.
+
+**Hands and faces.** On the poker frame at 1152×1152 and eight steps. Four steps is what produced
+the bartender's body through the counter, and eight what repaired it; hands and faces are the
+same family of defect. If faces repeat — which is the documented weakness of small models in a
+crowd — the next arm is four `sig_*` identities at 0.6 in one request, now that the budget admits
+them: not to make faces prettier, but to stop them being the same face.
+
+**What would justify a LoRA, and what would not.** A style that fails on *both* models, or faces
+that repeat after resolution and steps. **Not** a style that already works: a style LoRA brings
+its own basin and would fight a prompt this carefully built. And the catalogue's own finding
+stands — for klein there is **no** hand or face LoRA with a verifiable licence (the only one found
+declares none), while Z-Image's candidates are blocked on the half of the contract that has not
+been built.
+
 ## The second model: FLUX.2 [klein], one runtime since 2026-11-17
 
 The unit before P10 brought a second model into the tree and measured it through the service, without promoting
