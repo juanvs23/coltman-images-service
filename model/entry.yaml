@@ -2,10 +2,11 @@
 # GGUF, on the `ggml` runtime. A service booted without `--model` serves this.
 #
 # Two entries coexist and one model is served at a time, because the card is
-# single (protocol section 6.1). Z-Image Turbo FP8 — the historical production
-# model — lives unchanged at `model/entries/zimage.yaml` and is served with
-# `start --model z-image-turbo-fp8`; this entry is served with
-# `start --model flux2-klein-4b-gguf-q4`.
+# single (protocol section 6.1): this one, and MOSS-Image DMD int8's at
+# `model/entries/moss.yaml`. This entry is served with
+# `start --model flux2-klein-4b-gguf-q4`, MOSS with `start --model moss-dmd-int8`.
+# `model/models.yaml` is the roster; it records Z-Image Turbo FP8 as retired,
+# with its entry file and its weights deleted on 2026-11-19.
 #
 # This entry's `checkpoint` is the quantised **diffusion model**, and its
 # components are the two other artefacts `sd-cli` needs — the Qwen3-4B encoder as
@@ -74,7 +75,7 @@ request_fields:
 # door enforces it (protocol sections 4.1, 6.1 and 6.3). `max` is the model's
 # capability and nothing else: a request naming a path that does not exist, or
 # more references than this, is refused before any adapter is built. An entry
-# without this block accepts no reference at all, which is why Z-Image's has none
+# without this block accepts no reference at all, which is why Z-Image's had none
 # — and a reference block behind an adapter that cannot carry one refuses the
 # boot instead of dropping the picture.
 image:
@@ -85,7 +86,7 @@ image:
 # or `{"lora": ["pixel-art:0.5"]}` — and never a path; `weight` is the default a
 # request inherits when it names the alias without one, and a request's own
 # weight replaces it. A catalog is per model: an entry without this block accepts
-# no LoRA at all, which is why Z-Image's entry has none.
+# no LoRA at all, which is why Z-Image's entry had none.
 #
 # The three files are this tree's own copies under this entry's own folder,
 # `model/assets/loras/flux2-klein-4b-gguf-q4/`, and are not committed (the ignore

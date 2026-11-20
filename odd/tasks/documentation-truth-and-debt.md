@@ -209,6 +209,7 @@ Two debts remain open in `docs/roadmap.md`. Both have operator rulings.
 | --- | --- | --- |
 | T1, T2, T3 | delegated direct — one writer | 6+ non-trivial files touched; one writer, one work unit |
 | T4.3 | delegated direct — one writer | 2+ non-trivial files (`server.py`, `bin/`, `protocol.md`, `README.md`, tests) |
+| T5 | delegated direct — one writer | 7 non-trivial files (`README.md`, `docs/context.md`, `docs/protocol.md`, three reference documents, `model/entry.yaml`) |
 
 ## Progress
 
@@ -248,3 +249,76 @@ Two debts remain open in `docs/roadmap.md`. Both have operator rulings.
   16 s period; retirement lands 16.25 s after that render, leaving no port, no
   state file and no process. Guard 16 green alone in 95.527 s, and the whole
   matrix green — `Ran 16 tests in 546.863 s`, `OK`, after an independent verifier found ten defects, all fixed: `docs/context.md` still declared the debt open; guard 16's log assertion was cumulative against an append-only log and could not fail (it now baselines, and reports 1 declaration and 1 retirement for its own run); the e2e README cited guard 16's render as its own (it is 44.816 s, not 27.711 s); the changelog spliced two runs into one measurement; §5.4 generalised the refusal to every start option while `--port` refuses with 4; and five smaller honesty fixes.
+
+---
+
+### T5 — Truth pass after the roster, the retirement and the second model
+
+**Opened 2026-11-20.** The tree changed shape after the last sweep and the
+documents did not follow. `model/models.yaml` is now the roster; MOSS-Image DMD
+int8 is a first-class model; Z-Image's weights **and its entry file** are gone;
+FLUX.2 [klein] is still the promoted default that a service booted without
+`--model` serves. Seven documents still describe 2026-11-17, when two entries
+coexisted at `model/entry.yaml` and `model/entries/zimage.yaml`.
+
+**Facts, verified 2026-11-20 against the tree, not against memory:**
+
+- `model/models.yaml` — `moss-dmd-int8` → `model/entries/moss.yaml`, role
+  `production`; `flux2-klein-4b-gguf-q4` → `model/entry.yaml`, role `draft`;
+  `z-image-turbo-fp8`, role `retired`, **no `entry`**, `restore:` points at
+  `docs/reference/retired-models.md`.
+- `model/entries/` holds **one** file, `moss.yaml`. `model/entries/zimage.yaml`
+  was deleted on 2026-11-19 (commit `22cbb0e`); its last committed content is
+  recoverable with `git show 22cbb0e^:model/entries/zimage.yaml`.
+- `model/entry.yaml` is klein and is still the promoted default — a live
+  `run/server.json` from a bare `start` reports `flux2-klein-4b-gguf-q4`.
+- klein: steps 8, guidance 1.0, `limits.max_pixels` 1327104, steps 4..8,
+  `request_fields` carry `upscale` and `image` (`max: 10`), catalog `pixel-art`
+  1.0 / `anime` 0.5 / `background-remove` 0.5, census 3 / 5269713294 B,
+  defaults 1152×1152.
+- moss: id `moss-dmd-int8`, adapter `moss`, four artefacts plus the runtime,
+  steps 8, guidance 3.0, `limits.max_pixels` 921600, steps 4..16,
+  `request_fields` carry **neither `upscale` nor `image`**, catalog `realism`
+  0.7, census 4 / 11450446383 B, defaults 1280×720.
+- Z-Image: retired 2026-11-19, weights deleted (10.872.161.055 B across three
+  files). The adapter, `loader.py`, `fp8.py`, `model/z_image.json` and the
+  registry row stay; the **entry file does not**, so `--model
+  z-image-turbo-fp8` no longer resolves to anything.
+
+**The rule for this pass:** a statement about the *present* must match the tree.
+A historical record — a roadmap phase, a changelog entry, a measurement taken on
+a date — describes what was true then and **stays as written**.
+
+- [x] T5.1 `README.md` — the model section ("Two exist", the `--model` examples,
+  "preserved unchanged"), the LoRA section, the field table's per-entry values,
+  the timings table, the structure table and the troubleshooting notes.
+- [x] T5.2 `docs/context.md` — the opening paragraph, **entry**, **catalog** and
+  **reference image** definitions, the known-issues/limitation paragraph and the
+  host paragraph that derives the intersection from two entries.
+- [x] T5.3 `docs/protocol.md` — the `model/entries/` and `coltman_images/` rows
+  of section 3, the per-entry values in sections 5.1, 6.1 and 6.2, the JSON
+  examples that name `z-image-turbo-fp8`, and the entry-facts table.
+- [x] T5.4 `docs/reference/retired-models.md` — "what was kept" still claims the
+  entry file stays and that the guards read it; the restore recipe's steps 4 and
+  6 assume a file that no longer exists. The recipe must now recreate the entry
+  from `22cbb0e^` and add the roster row back.
+- [x] T5.5 `docs/reference/flux2-klein.md` — its opening still says two entries
+  coexist and names `model/entries/zimage.yaml`.
+- [x] T5.6 `model/entry.yaml` — the header comment still says Z-Image lives at
+  `model/entries/zimage.yaml`.
+- [x] T5.7 `docs/changelog.md` — one entry for this pass.
+
+**Checks:** `grep -rn 'entries/zimage\|two entries coexist\|Two entries' README.md docs model host.yaml` returns only historical records, and
+`.venv/bin/python -m unittest discover -s tests` stays green.
+
+**Progress.** 2026-11-20 — T5.1–T5.7 done in two writer passes, plus the four
+documents the first pass surfaced: `host.yaml`'s comments, `docs/roadmap.md`'s
+"Decisions that are not phases", `docs/reference/generator-handbook.md` (its
+catalogue claim and its folder count, now 24 files) and the §11/§12 tenses in
+`docs/protocol.md`. Both YAML files parse identically to their previous
+declarations — `model/entry.yaml` and `host.yaml` moved comments only. Verified:
+`.venv/bin/python -m unittest discover -s tests` → `Ran 20 tests in 431.514 s`,
+`OK`. Two openings left as they are, both recorded rather than fixed: the
+`realism` alias carries a recorded measurement in `moss.yaml`'s own comment that
+no reference document cites, and `docs/context.md`'s Environment section still
+does not describe `model/assets/moss/`.

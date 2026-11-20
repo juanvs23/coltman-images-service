@@ -9,10 +9,12 @@ community Q4_K_M GGUF through the vendored `sd-cli`, adapter `flux2klein_sd`. On
 2026-11-17 the operator promoted it: the entry is **`model/entry.yaml`**, the
 entry a service booted without `--model` serves, and it is selected with
 `start --model flux2-klein-4b-gguf-q4`. Z-Image's entry moved unchanged to
-`model/entries/zimage.yaml`; two entries coexist and one model is served at a
-time, because the card is single. The other runtime — the official scaled-FP8
-checkpoint read by diffusers, adapter `flux2klein` — was removed on 2026-11-17
-together with its assets, its entry and the 467-byte transformer config copy.
+`model/entries/zimage.yaml` on 2026-11-17 and was retired with its weights on
+2026-11-19 (`docs/reference/retired-models.md`); the second entry in the tree
+today is MOSS-Image DMD int8's at `model/entries/moss.yaml`, and one model is
+served at a time, because the card is single. The other runtime — the official
+scaled-FP8 checkpoint read by diffusers, adapter `flux2klein` — was removed on
+2026-11-17 together with its assets, its entry and the 467-byte transformer config copy.
 This document is the measurement record of **both** paths and the evidence the
 removal rests on. Everything below dated 2026-11-16 describes the tree as it
 stood then; where a row belongs to the removed path it says so.

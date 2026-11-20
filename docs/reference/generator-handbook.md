@@ -54,18 +54,20 @@ per video**. It is a stills option, not a video option.
 prompt is never encoded: the log shows one conditioning pass instead of two. That is why
 it is faster and why skin and material variety suffer.
 
-**Not yet reachable through the service:** `moss.yaml` declares `guidance: 3.0` and no
-LoRA catalogue, so the turbo path needs either a `guidance` override or a second entry.
-Both are one-line changes once the catalogue decision is made.
+**Not yet reachable through the service:** `moss.yaml` declares `guidance: 3.0` and one
+catalogue alias, `realism` — not the turbo adapter — so the turbo path needs either a
+`guidance` override or a second entry. Both are one-line changes once that decision is
+made.
 
 ---
 
 ## 4. What is installed, with licence status
 
-### MOSS adapters — `model/assets/loras/moss-dmd-int8/` (19 files)
+### MOSS adapters — `model/assets/loras/moss-dmd-int8/` (24 files)
 
 **Verified in this runtime:** `MOSS-Image-Anime-LoRA-F16` (504/504 tensors, L1 and L2
 passed) and `12_step_turbo_moss_1024_distill_v8_r64_weightsx2` (552/552, L1 passed).
+Neither is declared: the entry's catalogue is `realism` alone.
 
 **Present but not declared:** the control adapters (`depth`, `pose`) — a control LoRA
 needs a control image, and this adapter cannot send one, so they cannot work here yet.
@@ -74,7 +76,8 @@ must not be used in commercial delivery. `moss_alpha_v1` and the manga alpha pai
 4-channel RGBA VAE that this build refuses. `epyan_4step_lora` needs its own sampler.
 
 **Absent although named in the plan:** Impressionism, NextScene and five of the seven
-`thedeoxen` controls were never downloaded. The catalogue step is not done.
+`thedeoxen` controls were never downloaded. The catalogue declares one alias, `realism`;
+the rest of the step is not done.
 
 ### klein adapters — `model/assets/loras/flux2-klein-4b-gguf-q4/`
 
@@ -125,5 +128,6 @@ needs, and the card is single, so a second consumer is a scheduling decision.
 - **The turbo LoRA at CFG 3,0 is unmeasured**, which is why it is not declared.
 - **LoRA L3** (three adapters stacked) passed on the raw runtime, not through this
   service.
-- **No catalogue is declared for MOSS yet.** The anime adapter works end to end through
-  `denoise`; declaring it is one entry block plus `lora` in `request_fields`.
+- **The catalogue declares one alias, `realism`.** The anime adapter works end to end
+  through `denoise` and the turbo adapter is verified in the runtime, but neither is
+  declared: declaring one is an entry block plus `lora` in `request_fields`.

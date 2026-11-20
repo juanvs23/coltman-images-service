@@ -25,15 +25,15 @@
 #
 # This tree declares no `limits`, on purpose, and the arithmetic is why. Both
 # entries render their default box exactly at their measured ceiling — FLUX.2
-# [klein] at 1152x1152 = 1,327,104 px, Z-Image at 1280x720 = 921,600 px — so a
+# [klein] at 1152x1152 = 1,327,104 px, MOSS-Image at 1280x720 = 921,600 px — so a
 # cap that tightens either one is below that entry's default box and would be
 # refused at boot, and a cap that fits both does not exist: klein's default box
-# is larger than Z-Image's whole measured ceiling. The step ranges have the same
-# shape — 4..8 with a default of 8, and 8..16 with a default of 12 — so the range
-# inside both would be {8}, which does not contain Z-Image's default 12, and any
-# wider range reaches outside one entry's measurement. A `limits` block here
-# would therefore decide this deployment down to one entry, and the tree serves
-# both. What remains — the deployment's memory and its offload policy — is below.
+# is larger than MOSS-Image's whole measured ceiling. The step ranges are not the
+# obstacle — 4..8 sits inside 4..16 and contains both defaults of 8 — but a
+# `limits` block is all-or-nothing, so the ceiling is what refuses it. A block
+# here would therefore decide this deployment down to one entry, and the tree
+# serves both. What remains — the deployment's memory and its offload policy — is
+# below.
 id: this-deployment
 
 # torch-usable device memory on this card, in MiB. Declared for what it is: a

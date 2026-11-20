@@ -5,10 +5,11 @@ request into one still and owns the whole lifecycle: power on and warm up,
 serve requests, shut down. It exposes a loopback HTTP API, and the CLI is that
 API's first client — it contains no rendering of its own.
 
-It is **not** a wrapper around one model. The core is model-agnostic; Z-Image is
-the first adapter behind it, FLUX.2 [klein] the second (through the vendored
-`ggml` runtime), and the declared upscale stage serves every
-entry. `docs/protocol.md` is the law that says what is true here; this file says
+It is **not** a wrapper around one model. The core is model-agnostic; two models
+are installed behind their own adapters — FLUX.2 [klein] and MOSS-Image DMD int8,
+both through the vendored `ggml` runtime — and the declared upscale stage serves
+every entry. `model/models.yaml` is the roster: which models exist and what each
+is for. `docs/protocol.md` is the law that says what is true here; this file says
 how to use it.
 
 ## What you need
@@ -60,7 +61,7 @@ limits:                 # optional, and it may only tighten
   runs exactly as it did before the file existed.
 - **Why this tree ships no `limits`.** Both entries render their default box
   exactly at their measured ceiling (1152×1152 on the promoted entry, 1280×720 on
-  Z-Image's), so a cap that tightens either one sits below that entry's default
+  MOSS's), so a cap that tightens either one sits below that entry's default
   box — refused — and a cap above either ceiling widens a measurement — refused
   too; no single cap covers both entries. A deployment that wants a smaller
   envelope declares a cap **and** serves an entry whose defaults fit under it.
@@ -81,14 +82,15 @@ uv pip install --python .venv/bin/python \
   --index-url https://download.pytorch.org/whl/cu130 "torch==2.13.0+cu130"
 uv pip install --python .venv/bin/python -r requirements.txt
 
-# 2. Z-Image's assets, at the paths model/entries/zimage.yaml declares
-#      model/assets/checkpoint.safetensors      the FP8 transformer, 6.29 GB
-#      model/assets/vae.safetensors
-#      model/assets/vae_config.json
-#      model/assets/scheduler_config.json
-#      model/assets/qwen3/                      the Qwen3 text encoder directory
-#      model/assets/upscaler/realesrgan_x2plus.pth
-#    model/z_image.json is tracked (473 bytes) and pinned by digest in that entry.
+# 2. MOSS-Image's assets, at the paths model/entries/moss.yaml declares
+#      model/assets/moss/moss_image_sft_8stepdmd_int8_convrot.safetensors
+#                                               the int8 DMD transformer, 5.41 GB
+#      model/assets/moss/flux2-vae.safetensors   the FLUX.2 VAE, 336 MB
+#      model/assets/moss/Qwen3.5-9B-Q4_K_M.gguf  the GGUF text encoder, 5.68 GB
+#      model/assets/moss/tokenizer.json          the vocabulary that encoder reads
+#      model/assets/loras/moss-dmd-int8/moss_realism_enhancer.safetensors
+#                                               the one alias its catalog declares, 73 MB
+#      model/assets/upscaler/realesrgan_x2plus.pth   the declared stage's weights
 
 # 2b. the promoted model's assets, at the paths model/entry.yaml declares
 #      model/assets/flux2-klein/gguf/      the Q4_K_M diffusion model and Qwen3 encoder
@@ -114,11 +116,12 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m unittest discover -s tests -v      # ten to fifteen minutes
 ```
 
-**Guard 4 is the proof that step 2 worked.** The loader counts the parameter
-dtypes and refuses a model with no Float8 weights; the census must read
-`239 / 282 / 0 / 521`. Anything else means the checkpoint is not the one the
-entry declares, and the service says so instead of rendering something
-plausible.
+**Guard 4 is the proof that step 2 worked.** The census the render measures must
+equal the served entry's `expected_census` — four artefacts and 11,450,446,383
+bytes for MOSS-Image, three and 5,269,713,294 for FLUX.2 [klein]. Anything else
+means a file is not the one the entry declares, and the service says so instead
+of rendering something plausible. A loader that counts parameter dtypes refuses a
+model reporting no Float8 weight; neither installed entry takes that path.
 
 ## Use it
 
@@ -151,16 +154,18 @@ not part of any flow here; activating it changes nothing the commands read. If
 `.venv/` is missing, the wrapper does not build it: `start` exits 3 naming the
 missing interpreter, and the `Install` section above is how it gets built.
 
-`start --model ID` serves an entry by its `id`. Two exist: the promoted default,
-FLUX.2 [klein] (`flux2-klein-4b-gguf-q4`, on the vendored `ggml` runtime), and
-Z-Image Turbo FP8 (`z-image-turbo-fp8`), preserved unchanged:
+`start --model ID` serves an entry by its `id`. Two entries exist: the promoted
+default, FLUX.2 [klein] (`flux2-klein-4b-gguf-q4`), and MOSS-Image DMD int8
+(`moss-dmd-int8`), the roster's production model — both on the vendored `ggml`
+runtime. `model/models.yaml` names each model's role, and records Z-Image Turbo
+FP8 as retired, with its weights and its entry deleted on 2026-11-19:
 
 ```bash
 coltman-images start --model flux2-klein-4b-gguf-q4
 coltman-images generate --prompt "a lighthouse at dusk" --seed 7 --width 1024 --height 1024 --json
 coltman-images stop
 
-coltman-images start --model z-image-turbo-fp8
+coltman-images start --model moss-dmd-int8
 coltman-images generate --prompt "a lighthouse at dusk" --seed 7
 coltman-images stop
 ```
@@ -205,27 +210,28 @@ coltman-images generate --prompt "a lighthouse at dusk" \
 
 `--lora alias[:weight]` is repeatable, one occurrence per LoRA; the weight is a
 number in `(0, 1]` and, when you leave it out, the catalog's own default (1.0 for
-`pixel-art`, 0.5 for the other two). The catalog belongs to the entry, so Z-Image
-accepts no LoRA at all, and an alias the served entry does not declare is refused
-with the ones it does. **Each model owns its LoRAs**, and they live in
-`model/assets/loras/<entry-id>/`: reuse across models is possible but unverified,
-so a LoRA that works on a second model is copied into that model's folder rather
-than shared, and the entry refuses a path outside its own folder. What a request's
-LoRAs may cost is a **budget in device memory**, not a count: the door sums the
-requested LoRAs' file sizes against `host.yaml`'s `lora_budget_mib` — 3200 MiB
-here — and refuses a request above it with the sum, the budget and the largest
-single LoRA named. That is what the card was measured to afford: a 325 MB LoRA
-costs **+313 MiB of device memory and +1.5 s**, linear to eleven selections, and
-from twelve the memory plateaus at ~7.6 GB while the wall time doubles. A request
-with no `lora` field is rendered exactly as it was before the feature existed.
+`pixel-art`, 0.5 for the other two on the promoted entry, 0.7 for MOSS's
+`realism`). The catalog belongs to the entry, so an alias the served entry does
+not declare is refused with the ones it does. **Each model owns its LoRAs**, and
+they live in `model/assets/loras/<entry-id>/`: reuse across models is possible
+but unverified, so a LoRA that works on a second model is copied into that
+model's folder rather than shared, and the entry refuses a path outside its own
+folder. What a request's LoRAs may cost is a **budget in device memory**, not a
+count: the door sums the requested LoRAs' file sizes against `host.yaml`'s
+`lora_budget_mib` — 3200 MiB here — and refuses a request above it with the sum,
+the budget and the largest single LoRA named. That is what the card was measured
+to afford: a 325 MB LoRA costs **+313 MiB of device memory and +1.5 s**, linear
+to eleven selections, and from twelve the memory plateaus at ~7.6 GB while the
+wall time doubles. A request with no `lora` field is rendered exactly as it was
+before the feature existed.
 
 ### A reference image
 
 FLUX.2 [klein] is an editor as well as a text-to-image model: give it a picture
 and a prompt that says what to do with the picture. The request field is `image`,
 a list of absolute paths, and the served entry declares how many its model
-accepts — **10 on the promoted entry**, none on Z-Image's, whose entry refuses
-the field by name:
+accepts — **10 on the promoted entry**; MOSS-Image's path is text-to-image, so
+its entry declares no reference at all and refuses the field by name:
 
 ```bash
 # a still to edit: the service renders the reference itself
@@ -256,12 +262,12 @@ trained on text-to-image pairs helps or fights a reference. `docs/reference/lora
 | --- | --- |
 | `--prompt "..."` | required; the text to render |
 | `--seed N` | absent: the server picks one and returns it in `--json` |
-| `--width N` / `--height N` | absent: the entry's defaults (1152×1152 on the promoted entry, 1280×720 on Z-Image's) |
-| `--steps N` | absent: the entry's default (8 on the promoted entry, 12 on Z-Image's); the server refuses a value outside the entry's range (4–8, or 8–16) |
+| `--width N` / `--height N` | absent: the entry's defaults (1152×1152 on the promoted entry, 1280×720 on MOSS's) |
+| `--steps N` | absent: the entry's default (8 on both installed entries); the server refuses a value outside the entry's range (4–8, or 4–16) |
 | `--out PATH` | absolute path; absent: `out/` with `<UTC>-<seed>.png` |
 | `--upscale` | permit the declared stage when the size exceeds the native ceiling |
 | `--lora alias[:weight]` | apply a LoRA the served entry declares; repeatable; absent: none. The alias, the weight and the count are the server's to accept or refuse |
-| `--image PATH` | a reference image to edit or condition on; repeatable, up to the entry's `image.max` (10 on the promoted entry, none on Z-Image's). A missing file and too many references are refused by the server |
+| `--image PATH` | a reference image to edit or condition on; repeatable, up to the entry's `image.max` (10 on the promoted entry, none on MOSS's). A missing file and too many references are refused by the server |
 | `--json` | print the whole response object instead of the path |
 
 ### SD by default, HD on request
@@ -306,7 +312,7 @@ entry's ceiling (or, for HD, inside what the declared stage can serve). The
 reference control is an image input and it hands the page a **path**: drop a
 picture there and the prompt says what to do with it, leave it empty and the
 request carries no reference at all — and an entry that declares no reference
-capability (Z-Image's) hides the control rather than offering something the door
+capability (MOSS's) hides the control rather than offering something the door
 would refuse. The status line sits at the top of the right half, where you are
 looking while a request runs.
 
@@ -324,7 +330,7 @@ The five shapes, and what each gives on the promoted entry:
 cannot: its next step up with both sides on the 16 grid is 1344×1008, 27,648 px
 over `max_pixels`, so it stops at 1280×960 — which is the reason the page offers a
 list of shapes rather than two free width/height fields, where you could ask for a
-size the card refuses. On Z-Image's entry the same computation yields a different
+size the card refuses. On MOSS's entry the same computation yields a different
 ten boxes, because the ceiling and the defaults are the entry's.
 
 Every control also says what it does: one line under it, and a collapsed **what
@@ -360,16 +366,16 @@ cache under `run/ui/`, and `stop` takes the page down with the process.
 
 | Request | Measured |
 | --- | --- |
-| Z-Image, 1280×720, 12 steps | ~46 s (43.5 s of render, ~2.6 s of load) |
-| Z-Image, 2560×1440 via the stage | ~52 s (the same render plus ~4.6 s of stage) |
+| MOSS-Image DMD int8, 1280×720, 8 steps, through the service | 40.9 s and 41.7 s of wall, measured twice on 2026-11-19, with the card peaking at 6188 MiB |
+| MOSS-Image DMD int8, 2560×1440 via the stage | the same render plus the stage, measured at 4.6 s for 1280×720 → 2560×1440 |
 | FLUX.2 [klein], 1024², 4 steps, through the service | 15.5 s of `render_s`; `load_s` is 0 by declaration, because the child loads, samples and exits in one call |
 | FLUX.2 [klein], 1152², 4 steps, the child's own wall | 13.4 s, 4701 MiB — one prompt, one seed |
 | FLUX.2 [klein], 512², 8 steps, one LoRA | 8.96 s against 7.27 s without it, `pixel-art` at weight 1.0, and 10.52 s with three — one prompt, one seed, measured 2026-11-17 through the service. The per-MiB cost is **+1.5 s and +313 MiB of device memory for a 325 MB LoRA**, linear to eleven selections; the door refuses a request whose LoRAs exceed `lora_budget_mib` |
-| boot (`start`) | Z-Image ~20 s, of which ~11 s is the discarded 512×512 warm-up; FLUX.2 [klein] ~11.3 s. The 15.1 s the server spends on Z-Image's side is the floor `--idle-timeout` is refused below |
+| boot (`start`) | FLUX.2 [klein] ~11.3 s. The 15.1 s floor `--idle-timeout` is refused below was measured on Z-Image's entry: ~20 s, of which ~11 s was the discarded 512×512 warm-up |
 
 There is **no per-request timeout**: a render runs until it finishes, and `stop`
 is the only abort. The queue never refuses a request; it serialises them,
-because one model is 6 GB of an 8 GB card. `GET /health` reports how deep the
+because the card holds one model at a time. `GET /health` reports how deep the
 queue is.
 
 ## The API
@@ -440,11 +446,11 @@ committed `README.md` and a gitignored `evidence/` folder.
 | `docs/roadmap.md` | phases, debt, and what is not yet measured |
 | `docs/changelog.md` | one entry per work unit |
 | `docs/reference/` | the measurements the cost model is built on — evidence, not law |
-| `model/entry.yaml` | the model entry: assets, regime, defaults, ceiling, LoRA catalog |
+| `model/entry.yaml` | the promoted model entry: assets, regime, defaults, ceiling, LoRA catalog. `model/models.yaml` is the roster — which models exist and what each is for — and `model/entries/` holds the entries it points at |
 | `model/assets/loras/<entry-id>/` | the LoRAs one model owns: one folder per entry, copied — never shared — when a LoRA is verified on another model |
 | `host.yaml` | the deployment: the card's memory, the offload policy, the LoRA budget, and limits that may only tighten |
 | `model/upscaler.yaml` | the declared stage: its own weights and scale |
-| `coltman_images/` | the core, plus `adapters/zimage.py` behind the adapter contract |
+| `coltman_images/` | the core, plus `adapters/flux2klein_sd.py` and `adapters/moss.py` behind the adapter contract, and the unserved `adapters/zimage.py` with `loader.py` and `fp8.py` |
 | `coltman_images/ui.py` | the web page of `start --ui`: presentation for the submission seam |
 
 ## Troubleshooting
@@ -456,12 +462,14 @@ committed `README.md` and a gitignored `evidence/` folder.
 says so, clears the file and asks you to start again. Nothing is repaired
 implicitly.
 
-**`census ... no Float8 weights`.** On Z-Image's entry, the checkpoint at
-`model/assets/` is not the one the entry declares, or it failed to load as FP8.
-Nothing else in the system fails this quietly.
+**`census ... no Float8 weights`.** No installed entry declares a Float8 census —
+the two served models count artefacts and bytes — so this refusal belongs to the
+retired Z-Image path: the checkpoint at `model/assets/` was not the one that entry
+declared, or it failed to load as FP8. Nothing else in the system failed this
+quietly.
 
-**Out of memory at the top of the range.** Z-Image at 1280×720 keeps ~1.1 GiB of
-slack; FLUX.2 [klein] at 1152² keeps 3156 MiB of the card's 7857 usable. A desktop
+**Out of memory at the top of the range.** MOSS-Image at 1280×720 peaks at
+6188 MiB; FLUX.2 [klein] at 1152² keeps 3156 MiB of the card's 7857 usable. A desktop
 or a second process can take either margin away, and the service does not retry
 into a smaller size, because that would silently change what you asked for.
 
@@ -471,8 +479,8 @@ and accept that the extra pixels are synthesized.
 
 **`lora: this entry declares no LoRA named ...`.** The served entry's catalog
 does not declare that alias. The promoted entry declares `pixel-art`, `anime` and
-`background-remove`; Z-Image's entry declares none, so it accepts no LoRA at all,
-and a catalog is per model. The refusal lists the aliases the served entry has.
+`background-remove`, MOSS-Image's declares `realism`, and a catalog is per model.
+The refusal lists the aliases the served entry has.
 
 **`lora: these N LoRAs need X MiB … and this deployment's budget is Y MiB`.** The
 request's LoRAs are summed by their files' sizes and the total is above
