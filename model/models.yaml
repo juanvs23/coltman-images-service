@@ -1,0 +1,29 @@
+# The roster — which models exist and what each is for.
+#
+# This file owns ONE fact: the list. It copies no value out of an entry: each
+# `model/entries/<id>.yaml` (or `model/entry.yaml` for the promoted one) stays the
+# single owner of that model's declaration, and `host.yaml` stays the owner of the
+# deployment's numbers. Adding a model is one row; pruning is one row.
+#
+# `role` is one of:
+#   production — the model the service serves for final work
+#   draft      — the fast pass, for exploring prompts before paying for production
+#   retired    — no longer used; its weights may be gone, and `restore` names the
+#                recipe. The row stays so the door stays open and visible.
+models:
+  - id: moss-dmd-int8
+    entry: model/entries/moss.yaml
+    role: production
+
+  - id: flux2-klein-4b-gguf-q4
+    entry: model/entry.yaml
+    role: draft
+
+  - id: z-image-turbo-fp8
+    role: retired
+    restore: docs/reference/retired-models.md
+    note: >-
+      Weights deleted 2026-11-19 and not restorable byte-for-byte: they were locally
+      produced QUANTO INT8 artefacts with no script or source in the tree. No `entry`
+      path is declared because the entry file is gone and `load_entry` refuses a
+      declaration whose assets are missing.

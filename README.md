@@ -469,3 +469,9 @@ FP8 checkpoint's card declares Apache 2.0, the upscaler's repository is
 BSD-3-Clause, and each vendor card in `docs/reference/upstream/` states its own.
 A license on this code says nothing about a model you download.
 
+## Using this as an image generator
+
+Two models are installed and one is served at a time. `docs/reference/generator-handbook.md`
+states what serves, what it costs, the two configurations and how another project calls it;
+`docs/reference/model-lifecycle.md` states how to add or discard a model. The law is
+`docs/protocol.md`.
