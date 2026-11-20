@@ -74,6 +74,7 @@ import ast
 import datetime
 import filecmp
 import hashlib
+import math
 import json
 import os
 import pathlib
@@ -108,27 +109,61 @@ EVIDENCE = ROOT / "tests" / "e2e" / "p6-guards" / "evidence"
 FILES = EVIDENCE / "files"
 
 BIND = "127.0.0.1"
+def _ui_boxes(ceiling: int, factor: int) -> dict[str, tuple[tuple[int, int], tuple[int, int]]]:
+    """The page's five shape boxes for a given ceiling, as (native, upscaled).
+
+    Derived rather than remembered, because the boxes are a function of the
+    entry's `max_pixels` and nothing else. The rule reproduces Z-Image's recorded
+    table exactly (1280x720, 960x960, 1088x816, 816x1088, 720x1280 at 921 600 px)
+    and the promoted entry's at 1 327 104 px: side k of the aspect is the largest
+    integer whose product fits the ceiling with both sides a multiple of 16.
+    """
+    def box(limit: int, aw: int, ah: int) -> tuple[int, int]:
+        k = int(math.isqrt(limit // (aw * ah)))
+        while k > 0 and ((aw * k) % 16 or (ah * k) % 16):
+            k -= 1
+        return (aw * k, ah * k)
+
+    boxes: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {}
+    for name, (aw, ah) in (("16:9", (16, 9)), ("1:1", (1, 1)), ("4:3", (4, 3)),
+                           ("3:4", (3, 4)), ("9:16", (9, 16))):
+        # The upscaled box comes from the ceiling times factor squared, not from
+        # doubling the native one: the stage synthesises up to its own limit.
+        boxes[name] = (box(ceiling, aw, ah), box(ceiling * factor * factor, aw, ah))
+    return boxes
+
+
 PORT = 8420
 
-# Protocol section 10, guard 4 and section 6.1: the entry's expected census.
-PROTOCOL_CENSUS = {"float8": 239, "plain": 282, "other": 0, "total": 521}
-
-# Protocol section 6.1 and 10, guard 15: the entry's step range, and its default.
+# --- the fixture: derived from the promoted entry, never hard-coded ----------
 #
-# These are **Z-Image's declaration** (`model/entries/zimage.yaml`), the entry the
-# shared fixture serves, not a range of the law's: `limits.steps` belongs to the
-# entry, and the law's rule is that a request outside it is refused at the door
-# (protocol section 4.1). The promoted entry — FLUX.2 [klein], at
-# `model/entry.yaml` — declares its own, different range.
-PROTOCOL_STEPS = {"min": 8, "max": 16}
-PROTOCOL_DEFAULT_STEPS = 12
+# The shared server used to be pinned to Z-Image by id, census and step range,
+# which meant discarding that model cost twelve guard repairs. The matrix now
+# follows `model/entry.yaml` — the promoted default, the model the service
+# serves — so promoting a different entry moves the guards with it and no
+# model's numbers live in this file.
+FIXTURE_ENTRY = ROOT / "model" / "entry.yaml"
+"""The entry the shared fixture serves. Change the promoted entry, not this file."""
 
-ZIMAGE_ID = "z-image-turbo-fp8"
-"""Z-Image's entry id, the alias the shared fixture serves (`start --model`)."""
 
-ZIMAGE_ENTRY = ROOT / "model" / "entries" / "zimage.yaml"
-"""Z-Image's entry file. Its census, ceiling and ladder are the ones guards 2-7,
-9, 10, 13 and 16 were written against, and the recorded baseline is its still."""
+def _load_fixture():
+    from coltman_images.entry import load_entry
+
+    return load_entry(FIXTURE_ENTRY)
+
+
+_FIXTURE = _load_fixture()
+FIXTURE_ID = _FIXTURE.id
+"""The alias the shared fixture serves (`start --model`), read from the entry."""
+
+FIXTURE_CENSUS = dict(_FIXTURE.expected_census)
+"""The fixture entry's declared census — its keys are the adapter's, not the law's."""
+
+FIXTURE_STEPS = {"min": _FIXTURE.steps_min, "max": _FIXTURE.steps_max}
+"""The fixture entry's step range (protocol section 4.1: outside it is refused)."""
+
+FIXTURE_DEFAULT_STEPS = _FIXTURE.steps
+"""The fixture entry's declared default, which a request without `steps` gets."""
 
 POINT_STEPS = {"min": 4, "max": 4}
 """A synthetic single-value range, not any entry's real declaration.
@@ -144,7 +179,9 @@ expressible by an entry rather than hardcoded in the law.
 PROMPT = "a brass compass on a wooden table"
 SEED = 4242
 WIDTH, HEIGHT = 1280, 720
-MAX_PIXELS = 921600
+MAX_PIXELS = _FIXTURE.max_pixels
+"""The fixture entry's own ceiling — read, not remembered. Z-Image declared
+921 600 px (1280x720); the promoted entry declares 1 327 104 (1152x1152)."""
 
 HTTP_TIMEOUT_S = 600.0
 """One 1280x720 render is ~46 s and a 2560x1440 delivery ~50 s; 600 s is slack, not a ceiling."""
@@ -838,23 +875,27 @@ class ContractCase(GuardCase):
         from coltman_images.entry import load_entry
         from coltman_images.loader import CensusError, assert_census
 
-        entry = load_entry(ZIMAGE_ENTRY)
+        entry = load_entry(_g04_entry())
+        zimage_census = dict(entry.expected_census)
         findings: dict[str, object] = {"expected_census": entry.expected_census}
 
         # The entry's own census must pass, or the comparison below proves nothing.
-        self.assertEqual(assert_census(PROTOCOL_CENSUS, entry), PROTOCOL_CENSUS)
+        self.assertEqual(assert_census(zimage_census, entry), zimage_census)
 
         # The failure this guard exists for: a silent downgrade to plain
         # precision still produces a plausible still, so the census is the only
         # witness. Every parameter plain, no Float8 weight at all.
-        plain_load = {"float8": 0, "plain": 521, "other": 0, "total": 521}
+        total = zimage_census["total"]
+        plain_load = {"float8": 0, "plain": total, "other": 0, "total": total}
         with self.assertRaises(CensusError) as refused:
             assert_census(plain_load, entry)
         findings["refusal"] = str(refused.exception)
         self.assertIn("Float8", str(refused.exception))
 
         # And a census that merely differs from the entry is refused too.
-        off_by_one = {"float8": 238, "plain": 282, "other": 0, "total": 520}
+        off_by_one = dict(zimage_census)
+        off_by_one["float8"] = zimage_census["float8"] - 1
+        off_by_one["total"] = zimage_census["total"] - 1
         with self.assertRaises(CensusError) as drifted:
             assert_census(off_by_one, entry)
         findings["drift_refusal"] = str(drifted.exception)
@@ -1226,9 +1267,11 @@ G15_RENDER_SIDE = 512
 """Guard 15's real stills. Steps are the variable; the size is kept small so the
 guard costs four short renders instead of four 1280x720 ones."""
 
-G15_STEPS = (8, 8, 12, 12)
+G15_STEPS = (FIXTURE_STEPS["min"], FIXTURE_STEPS["min"],
+             FIXTURE_STEPS["max"], FIXTURE_STEPS["max"])
 """Two runs at each of the two values, interleaved by value: the pair proves
-determinism per value, the two pairs prove the values differ."""
+determinism per value, the two pairs prove the values differ. The values are the
+fixture entry's own range, so promoting another entry moves them with it."""
 
 
 class _G15StubAdapter:
@@ -1263,7 +1306,7 @@ class _G15StubAdapter:
 
 
 def _g15_entry(
-    steps: int = PROTOCOL_DEFAULT_STEPS,
+    steps: int = FIXTURE_DEFAULT_STEPS,
     name: str = "g15-entry.yaml",
     steps_range: dict | None = None,
 ) -> pathlib.Path:
@@ -1280,10 +1323,39 @@ def _g15_entry(
         "guidance": 0.0,
         "limits": {
             "max_pixels": G15_SIDE * G15_SIDE,
-            "steps": dict(PROTOCOL_STEPS if steps_range is None else steps_range),
+            "steps": dict(FIXTURE_STEPS if steps_range is None else steps_range),
         },
         "request_fields": ["prompt", "seed", "width", "height", "out", "steps"],
         "expected_census": {"parameters": 1},
+        "defaults": {"width": G15_SIDE, "height": G15_SIDE, "format": "png"},
+        "warmup": {"width": G15_SIDE, "height": G15_SIDE, "prompt": "warm up", "seed": 0},
+    }
+    path = EVIDENCE / name
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _g04_entry(name: str = "g04-entry.yaml") -> pathlib.Path:
+    """A synthetic entry that declares the float8-keyed census guard 4b reasons about.
+
+    The property guard 4b tests is `assert_census` refusing a plain-precision
+    load. That shape belongs to an adapter that counts `float8` weights, so the
+    declaration is synthesised here rather than borrowed from a model that is
+    installed — which is what let this guard depend on one model's presence.
+    """
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    asset = EVIDENCE / "g04-asset.bin"
+    asset.write_bytes(b"guard 4b: a component no adapter here reads\n")
+    document = {
+        "id": "g04-float8-model",
+        "adapter": G15_STUB,
+        "checkpoint": str(asset),
+        "components": {"weights": str(asset)},
+        "steps": 4,
+        "guidance": 1.0,
+        "limits": {"max_pixels": G15_SIDE * G15_SIDE, "steps": {"min": 4, "max": 4}},
+        "request_fields": ["prompt", "seed", "width", "height", "out", "steps"],
+        "expected_census": {"float8": 239, "plain": 282, "other": 0, "total": 521},
         "defaults": {"width": G15_SIDE, "height": G15_SIDE, "format": "png"},
         "warmup": {"width": G15_SIDE, "height": G15_SIDE, "prompt": "warm up", "seed": 0},
     }
@@ -2038,7 +2110,14 @@ class ServiceCase(GuardCase):
     def test_0300_guard06_default_folder(self) -> None:
         """Guard 6: `generate` with no `--out` writes into `out/` and says where."""
         before = set(OUTPUT_DIR.glob("*.png")) if OUTPUT_DIR.is_dir() else set()
-        completed = _cli("generate", "--prompt", PROMPT, "--seed", str(SEED))
+        # The geometry is stated so that guard 7 compares two renders of the SAME
+        # request: with no `--width/--height` this one inherits the entry's defaults,
+        # which are not the box guard 3 asks for. The parity guard compares bytes, so
+        # the two requests have to be identical before the bytes can be.
+        completed = _cli(
+            "generate", "--prompt", PROMPT, "--seed", str(SEED),
+            "--width", str(WIDTH), "--height", str(HEIGHT),
+        )
         after = set(OUTPUT_DIR.glob("*.png")) if OUTPUT_DIR.is_dir() else set()
 
         _put(
@@ -2295,12 +2374,22 @@ class ServiceCase(GuardCase):
         self.assertEqual(stage.get("model"), declaration["id"])
         self.assertEqual(stage.get("scale"), factor)
         # The base the render reached, not the size the client asked for.
-        self.assertEqual(stage.get("from"), [WIDTH, HEIGHT])
+        # The source is the largest box of the target's aspect that still fits the
+        # entry's ceiling — read from the declaration, not remembered. With Z-Image
+        # that box happened to be WIDTHxHEIGHT (1280x720 = its ceiling); the promoted
+        # entry's ceiling is larger, so the clamp lands on 1536x864 for a 16:9 request.
+        ratio_w, ratio_h = target_width, target_height
+        divisor = math.gcd(ratio_w, ratio_h)
+        aspect_w, aspect_h = ratio_w // divisor, ratio_h // divisor
+        k = int((MAX_PIXELS / (aspect_w * aspect_h)) ** 0.5)
+        expected_from = [aspect_w * k, aspect_h * k]
+        self.assertEqual(stage.get("from"), expected_from, "the stage's source is not the ceiling-clamped box")
+        self.assertLessEqual(expected_from[0] * expected_from[1], MAX_PIXELS, "the source exceeds the ceiling")
         self.assertEqual(stage.get("to"), [target_width, target_height])
         self.assertGreater(float(stage.get("upscale_s", 0.0)), 0.0, "the stage reports no cost")
 
         # The census is the render's: the stage synthesises pixels, not parameters.
-        self.assertEqual(body.get("census"), PROTOCOL_CENSUS)
+        self.assertEqual(body.get("census"), FIXTURE_CENSUS)
 
         self.assertTrue(destination.is_file(), f"{destination} was not written")
         self.assertEqual(_png_size(destination), (target_width, target_height))
@@ -2346,8 +2435,8 @@ class ServiceCase(GuardCase):
         from coltman_images.entry import EntryError, load_entry
         from coltman_images.render import render
 
-        entry = load_entry(ZIMAGE_ENTRY)
-        low, high = PROTOCOL_STEPS["min"], PROTOCOL_STEPS["max"]
+        entry = load_entry(FIXTURE_ENTRY)
+        low, high = FIXTURE_STEPS["min"], FIXTURE_STEPS["max"]
         outside = (low - 1, high + 1)
         self.assertEqual(
             (entry.steps_min, entry.steps_max),
@@ -2355,7 +2444,7 @@ class ServiceCase(GuardCase):
             "the entry's limits.steps does not carry the range the law declares",
         )
         self.assertEqual(
-            entry.steps, PROTOCOL_DEFAULT_STEPS, "the entry's default is not the declared 12"
+            entry.steps, FIXTURE_DEFAULT_STEPS, "the entry's default is not the declared 12"
         )
 
         # 1. the entry's default must lie inside the range it is bounded by.
@@ -2443,10 +2532,10 @@ class ServiceCase(GuardCase):
         # An absent `steps` means the entry's default: guard 3's requests name none.
         defaulted = self.obs("guard03.renders")[0]["body"].get("steps")
         self.assertEqual(
-            defaulted, PROTOCOL_DEFAULT_STEPS, f"a request without steps rendered at {defaulted}"
+            defaulted, FIXTURE_DEFAULT_STEPS, f"a request without steps rendered at {defaulted}"
         )
 
-        # 4. the bytes: 8 and 12 differ, each stable across two runs.
+        # 4. the bytes: the fixture's two step values differ, each stable across two runs.
         runs: list[dict] = []
         for index, steps in enumerate(G15_STEPS, start=1):
             destination = FILES / f"g15-run{index}-steps{steps}.png"
@@ -2476,8 +2565,8 @@ class ServiceCase(GuardCase):
         _put(
             "guard15",
             {
-                "range": PROTOCOL_STEPS,
-                "default": PROTOCOL_DEFAULT_STEPS,
+                "range": FIXTURE_STEPS,
+                "default": FIXTURE_DEFAULT_STEPS,
                 "entry": {"steps": entry.steps, "min": entry.steps_min, "max": entry.steps_max},
                 "entry_refusal": str(loose.exception),
                 "adapter_refusal": adapter_refusal,
@@ -2528,12 +2617,19 @@ class ServiceCase(GuardCase):
             self.assertTrue(still.is_file(), f"{still} was not written")
             self.assertEqual(_png_size(still), (G15_RENDER_SIDE, G15_RENDER_SIDE))
 
-        eight = by_steps[8][0]["sha256"]
-        twelve = by_steps[12][0]["sha256"]
+        low_steps, high_steps = G15_STEPS[0], G15_STEPS[-1]
+        low_sha = by_steps[low_steps][0]["sha256"]
+        high_sha = by_steps[high_steps][0]["sha256"]
         self.assertNotEqual(
-            eight, twelve, "8 and 12 steps produced the same bytes: the step count never reached the sampler"
+            low_sha,
+            high_sha,
+            f"{low_steps} and {high_steps} steps produced the same bytes: "
+            "the step count never reached the sampler",
         )
-        print(f"guard 15: steps 8 {eight[:16]}… against steps 12 {twelve[:16]}… → different bytes")
+        print(
+            f"guard 15: steps {low_steps} {low_sha[:16]}… against steps {high_steps} "
+            f"{high_sha[:16]}… → different bytes"
+        )
 
     # --- 8: guard 1, on a quiet queue -------------------------------------
 
@@ -2612,7 +2708,7 @@ class ServiceCase(GuardCase):
         status, health = self.obs("guard02.health")
         self.assertEqual(status, 200, f"/health did not answer: {health}")
 
-        entry = load_entry(ZIMAGE_ENTRY)
+        entry = load_entry(FIXTURE_ENTRY)
         observed = {
             "health": health.get("census"),
             **{f"guard3.render{i + 1}": render["body"].get("census") for i, render in enumerate(self.obs("guard03.renders"))},
@@ -2622,11 +2718,11 @@ class ServiceCase(GuardCase):
             },
             "guard10.hd": self.obs("guard10")["render"].get("census"),
         }
-        _put("guard04", {"observed": observed, "entry_expected": entry.expected_census, "protocol": PROTOCOL_CENSUS})
+        _put("guard04", {"observed": observed, "entry_expected": entry.expected_census, "fixture": FIXTURE_CENSUS})
 
         for where, census in observed.items():
             print(f"guard 4: {where} census {census}")
-            self.assertEqual(census, PROTOCOL_CENSUS, f"{where} reports {census}, not the declared census")
+            self.assertEqual(census, FIXTURE_CENSUS, f"{where} reports {census}, not the declared census")
             self.assertEqual(census, dict(entry.expected_census), f"{where} disagrees with the entry")
 
     # --- 10: guard 2, last, because it stops the server -------------------
@@ -2725,7 +2821,7 @@ class ServiceCase(GuardCase):
         self.assertEqual(_server_pids(), [state.get("pid")], "one start, one process")
         for field in ("model", "started_at", "warm_at", "census"):
             self.assertEqual(state.get(field), health.get(field), f"the state file and /health disagree on {field}")
-        self.assertEqual(state.get("census"), PROTOCOL_CENSUS)
+        self.assertEqual(state.get("census"), FIXTURE_CENSUS)
         self.assertEqual(start["stderr"], "", "start printed diagnostics on a clean boot")
 
         # generate: without a server, exit 4 and no server started.
@@ -2803,7 +2899,11 @@ class ServiceCase(GuardCase):
         # The render has to outlast the declared period, or it would prove
         # nothing: 1024x576 is 589,824 px, about 28 s on this card against the
         # 16 s the guard declares.
-        width, height = 1024, 576
+        # The render has to outlast the declared period, or the guard proves nothing.
+        # Under Z-Image a 1024x576 still took longer than 16 s; the promoted entry
+        # renders that in ~11 s. The ceiling box plus the entry's own declared stage
+        # takes it past 16 s again -- and both numbers come from the declaration.
+        width, height = _ui_boxes(MAX_PIXELS, 2)["16:9"][0]
 
         # 0. One instance per card (guard 12). The class fixture starts a shared
         #    server and guard 2 normally stops it before this guard runs; under
@@ -2844,7 +2944,7 @@ class ServiceCase(GuardCase):
         #    registered before the start: a failing assertion below must not leave
         #    the card taken for the rest of the matrix.
         self.addCleanup(_stop_if_running)
-        started = _cli("start", "--idle-timeout", f"{timeout:g}", "--model", ZIMAGE_ID, timeout=600)
+        started = _cli("start", "--idle-timeout", f"{timeout:g}", "--model", FIXTURE_ID, timeout=600)
         print(f"guard 16: start --idle-timeout {timeout:g} → exit {started.returncode}; {started.stdout.strip()}")
         _put("guard16.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
         self.assertEqual(started.returncode, 0, f"start failed: {started.stderr}")
@@ -2873,6 +2973,7 @@ class ServiceCase(GuardCase):
             "seed": 7,
             "width": width,
             "height": height,
+            "upscale": True,
             "out": str(still),
         })
         wall = round(time.perf_counter() - began, 2)
@@ -3082,10 +3183,10 @@ class ServiceCase(GuardCase):
 
         # The real numbers, read as a declaration rather than resolved: a full
         # `load_entry` would hash 6.29 GB for a fact this guard only needs to
-        # compare, and guard 4 already owns the resolution. It is Z-Image's entry
-        # that this half is about — the recorded baseline and the sizes the page's
-        # five shapes were fixed against.
-        declaration = yaml.safe_load(ZIMAGE_ENTRY.read_text(encoding="utf-8"))
+        # compare, and guard 4 already owns the resolution. The entry read here is
+        # the one the fixture serves, so the panel is checked against the model that
+        # is actually installed rather than the one the baseline was first taken on.
+        declaration = yaml.safe_load(FIXTURE_ENTRY.read_text(encoding="utf-8"))
         stage = yaml.safe_load((ROOT / "model" / "upscaler.yaml").read_text(encoding="utf-8"))
         real = types.SimpleNamespace(
             defaults=dict(declaration["defaults"]),
@@ -3113,11 +3214,7 @@ class ServiceCase(GuardCase):
         # rather than force the area. A different entry or factor moves every one
         # of these, which is why they are computed here and not carried in ui.py.
         shapes = {
-            "16:9": ((1280, 720), (2560, 1440)),
-            "1:1": ((960, 960), (1920, 1920)),
-            "4:3": ((1088, 816), (2176, 1632)),
-            "3:4": ((816, 1088), (1632, 2176)),
-            "9:16": ((720, 1280), (1440, 2560)),
+            **_ui_boxes(MAX_PIXELS, real_factor),
         }
         computed = {
             shape: (
@@ -3500,12 +3597,24 @@ class ServiceCase(GuardCase):
                     f"{shape}: HD {hd[0]}x{hd[1]} does not clear the ceiling, so the stage would not run "
                     "and the page would say SD",
                 )
-            # 16:9 at SD is the shape the entry itself renders by default, so the
-            # recorded baseline's request is unchanged by this control.
+            # The entry's own default box has to be one of the page's five shapes,
+            # or the recorded baseline's request is not a shape this control can
+            # produce. Which shape that is belongs to the entry: Z-Image defaulted to
+            # 1280x720, which is its 16:9 box; the promoted entry defaults to
+            # 1152x1152, which is its 1:1 box. Naming 16:9 here was a coincidence,
+            # not a rule.
+            default_box = (int(real.defaults["width"]), int(real.defaults["height"]))
+            matching = [name for name, (native, _) in _ui_boxes(MAX_PIXELS, real_factor).items()
+                        if native == default_box]
+            self.assertTrue(
+                matching,
+                f"the entry's default box {default_box[0]}x{default_box[1]} is none of the "
+                f"page's five shapes, so the baseline's request cannot be produced by this control",
+            )
             self.assertEqual(
-                computed["16:9"][0],
-                (int(real.defaults["width"]), int(real.defaults["height"])),
-                "16:9 at SD is not the entry's own default box, so the baseline would move",
+                computed[matching[0]][0],
+                default_box,
+                f"{matching[0]} at SD is the entry's default box, but the page computes another",
             )
             with self.assertRaises(ValueError):
                 ui_module.size_for(real, "5:4", 1)
@@ -3548,7 +3657,7 @@ class ServiceCase(GuardCase):
         # The stop is registered before the start: a failing assertion below must
         # not leave the page's process, and the card, taken for the rest of the matrix.
         self.addCleanup(_stop_if_running)
-        started = _cli("start", "--ui", "--model", ZIMAGE_ID, timeout=600)
+        started = _cli("start", "--ui", "--model", FIXTURE_ID, timeout=600)
         print(f"guard 13: start --ui → exit {started.returncode}; {started.stdout.strip()}")
         _put("guard13.start", {"exit": started.returncode, "stdout": started.stdout, "stderr": started.stderr})
         self.assertEqual(started.returncode, 0, f"start --ui failed: {started.stderr}")
@@ -4462,10 +4571,10 @@ class ServiceCase(GuardCase):
         )
 
         # The field is the entry's: a model with no reference block says so.
-        zimage = load_entry(ZIMAGE_ENTRY)
-        self.assertEqual(zimage.images_max, 0, "Z-Image's entry declares references")
-        zimage_refusal = " ".join(zimage.accepts({"prompt": "x", "image": [str(reference)]}))
-        self.assertIn("accepts no reference image", zimage_refusal, f"{zimage_refusal}")
+        no_image = load_entry(_g19_entry("g19-no-image.yaml", image_block=False, image_field=False))
+        self.assertEqual(no_image.images_max, 0, "the synthetic entry declares references")
+        no_image_refusal = " ".join(no_image.accepts({"prompt": "x", "image": [str(reference)]}))
+        self.assertIn("accepts no reference image", no_image_refusal, f"{no_image_refusal}")
 
         # Both halves of the declaration must agree, or the system would honour
         # half of it: a capability nobody can name, or a field with no capability.
@@ -4684,7 +4793,7 @@ class ServiceCase(GuardCase):
                 "missing": missing_refusal,
                 "relative": relative_refusal,
                 "count": count_refusal,
-                "zimage": zimage_refusal,
+                "zimage": no_image_refusal,
                 "declaration": {
                     "block_without_field": str(block_without_field.exception),
                     "field_without_block": str(field_without_block.exception),
@@ -4731,14 +4840,14 @@ def _generate_without_server() -> dict:
 
 
 def _start() -> dict:
-    """Start the shared server on Z-Image, the entry this matrix measures.
+    """Start the shared server on the fixture entry, the model this matrix measures.
 
     `--model` is the mechanism (protocol section 5.1), and the alias is explicit
     on purpose: the promoted default is FLUX.2 [klein], while the census, the
     ladder and the recorded baseline these guards assert are Z-Image's.
     """
     began = time.perf_counter()
-    completed = _cli("start", "--model", ZIMAGE_ID, timeout=600)
+    completed = _cli("start", "--model", FIXTURE_ID, timeout=600)
     return {
         "exit": completed.returncode,
         "stdout": completed.stdout,
