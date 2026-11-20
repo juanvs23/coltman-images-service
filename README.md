@@ -128,6 +128,29 @@ coltman-images generate --prompt "a lighthouse at dusk"
 coltman-images stop
 ```
 
+`service.sh` at the tree root is an operator's wrapper around that CLI: it
+passes `start`, `generate` and `stop` through and adds `status`, `logs` and
+`restart`. It declares no command of its own — the CLI still has exactly three.
+
+```bash
+./service.sh start                            # the same start, wrapped
+./service.sh status                           # pid, port, model, queue, census — or why it is not up
+./service.sh logs -f                          # follow run/server.log
+./service.sh restart --model moss-dmd-int8    # stop, then start with those options
+./service.sh stop
+```
+
+`status` exits 0 when a server answers, 1 when none does, 2 while a process owns
+the card but the port is still silent (warming up), and 3 when the state file
+cannot be read. `status --json` prints the same facts as one object.
+
+**The venv is never something you activate by hand.** The CLI launches the
+server with the project's interpreter and `service.sh` runs `status` with it —
+both by absolute path (`.venv/bin/python`) — so `source .venv/bin/activate` is
+not part of any flow here; activating it changes nothing the commands read. If
+`.venv/` is missing, the wrapper does not build it: `start` exits 3 naming the
+missing interpreter, and the `Install` section above is how it gets built.
+
 `start --model ID` serves an entry by its `id`. Two exist: the promoted default,
 FLUX.2 [klein] (`flux2-klein-4b-gguf-q4`, on the vendored `ggml` runtime), and
 Z-Image Turbo FP8 (`z-image-turbo-fp8`), preserved unchanged:
