@@ -1,0 +1,145 @@
+# MOSS-Image DMD int8: the production model, served through the vendored `sd-cli`.
+#
+# The checkpoint is the quantised 8-step DMD diffusion transformer, and the three
+# components beside it are the artefacts the child cannot build the graph
+# without: the FLUX.2 VAE that decodes the latents, the Qwen3.5-9B GGUF text
+# encoder, and the tokenizer that encoder reads. Nothing here is read by Python's
+# model stack — the `moss` adapter runs `sd-cli` as a subprocess and passes the
+# four files on its command line (protocol section 6.3).
+#
+# Served with `start --model moss-dmd-int8`. The promoted default entry stays
+# FLUX.2 [klein] 4B at `model/entry.yaml`; this file declares the model the plan
+# calls production, and the roster decision lives outside both entries
+# (protocol section 6.1).
+id: moss-dmd-int8
+
+adapter: moss
+
+checkpoint: model/assets/moss/moss_image_sft_8stepdmd_int8_convrot.safetensors
+
+components:
+  vae: model/assets/moss/flux2-vae.safetensors
+  llm: model/assets/moss/Qwen3.5-9B-Q4_K_M.gguf
+  tokenizer: model/assets/moss/tokenizer.json
+  cli: vendor/stable-diffusion.cpp/build/bin/sd-cli
+
+# Eight steps, the count the DMD distill is native at: 4 steps is the cheap end
+# of the range and 12 the long one, but the model was distilled to eight.
+#
+# **The 1024x1024 figures below are above the ceiling this entry declares**, and
+# they are stated as what they are rather than dropped: they were taken on
+# 2026-11-19 before the ceiling was fixed, they are the only measured quality
+# figures this model has, and no request can reach that box through this entry
+# any more. Measured then, seed 7, `--offload-to-cpu`: 12 steps at CFG 3.0 cost
+# 52.2 s and peaked at 6394 MiB; 8 steps cost 47.6 s and 5994 MiB; 4 steps cost
+# 34.3 s and the same 5994 MiB; 8 steps with the 12-step turbo LoRA at CFG 1.0
+# cost 40.4 s and peaked at 6686 MiB (run/p10-stage2/moss-image/).
+#
+# **The configuration this entry serves — 8 steps, CFG 3.0, 1280x720 — was
+# measured through the service on 2026-11-19, twice:** 40.9 s and 41.7 s of wall
+# (the service reported `duration_s` 40.860 and 41.734, `render_s` 40.668 and
+# 41.532) with the card peaking at 6188 MiB both times against a 309 MiB
+# baseline — device memory as `nvidia-smi` reports it, sampled every 250 ms, the
+# method `run/p10-stage2/probe.py` uses. The two renders are byte-identical
+# (`sha256 7ef81244…`), so the wall spread is load and not determinism. The
+# response carries no peak of its own for a subprocess adapter: its
+# `peak_alloc_mib` is torch's counter and torch allocates nothing here.
+#
+# The quality configuration is CFG 3.0 without a LoRA; CFG 1.0 is only valid
+# with the turbo LoRA, which is why guidance is per-entry and not per-request.
+steps: 8
+guidance: 3.0
+
+limits:
+  # 921,600 px = 1280x720, and the two facts that fix it are the project's default
+  # and the page's SD box. The deployment's output is SD 720p — 1280x720 exactly —
+  # so this entry's default box is that one, not a 1024-square. And the page
+  # derives its "SD" box from `max_pixels`, which is why the ceiling has to be the
+  # default box's area: at 921,600 px the page's 16:9 SD box is exactly 1280x720,
+  # while a larger ceiling would put it at 1536x864 and every default render would
+  # cost 1.44x the pixels intended.
+  #
+  # **The cost of that choice, stated and not hidden:** the largest square this
+  # ceiling admits is 960x960, so the 1024x1024 measurements in the block above are
+  # above the ceiling and cannot be requested through this entry. They are kept as
+  # the model's only measured quality figures, and 1280x720 is the box the entry
+  # actually serves (measured above at 40.9 s and 41.7 s and 6188 MiB).
+  #
+  # The step range is bounded by what was rendered — 4, 8 and 12 were measured, so
+  # nothing above 16 is declared.
+  max_pixels: 921600
+  steps: {min: 4, max: 16}
+
+# No `image` and no `lora`, deliberately.
+#
+# MOSS-Image's path here is text-to-image: the `moss` adapter hands the child no
+# picture in, so the entry declares no reference block and the door refuses an
+# `image` field with the model's own terms (protocol sections 4.1, 6.1, 6.3).
+#
+# The LoRA catalog is left out, and the reason is stated rather than implied. The
+# adapter applies one — `supports_loras` is true, and the tag path was exercised
+# end to end while this entry was built: the anime adapter rendered at this
+# entry's own guidance in 33.8 s and produced different bytes from the same seed
+# without it. What is missing is a catalog that is true of the *set*:
+# `model/assets/loras/moss-dmd-int8/` holds only two of the files the plan calls
+# Apache 2.0 (the anime adapter and the 12-step turbo) — the seven control
+# adapters, Impressionism and NextScene are not in the folder at all — the
+# controls would need a control image this service does not carry, and the turbo
+# was measured at CFG 1.0 while this entry serves CFG 3.0. A catalog is what this
+# model may be *asked* for, and declaring one alias also widens `request_fields`
+# with a `lora` field this entry does not carry: that is the catalogue step's
+# decision, and it is taken there rather than invented here (protocol sections 3
+# and 6.1).
+request_fields:
+  - prompt
+  - seed
+  - width
+  - height
+  - out
+  - steps
+  - lora
+
+# What the subprocess path can prove, and nothing more: the four files the adapter
+# hands the child and their measured size — the diffusion model, the VAE, the
+# encoder and the tokenizer. The child owns the tensor graph and its stdout is
+# prose, so no parameter census is claimed. Sizes read with `stat` on 2026-11-19;
+# the adapter measures the same four files on every call and refuses a mismatch.
+# The catalogue is small on purpose: only adapters whose LICENCE permits commercial
+# use are declared, and only those whose effect was measured on this host.
+#
+# Measured 2026-11-19 (poker scene, 1280x720, seed 7, 12 steps, CFG 3.0):
+#   realism 0.7 -> saturation 68,1% -> 66,9%, contrast sigma 50,3 -> 55,3, and a
+#   beard that renders as individual hairs instead of a soft patch. That is the
+#   only adapter of ten tried that improved skin rather than washing it.
+#   contrast_hdr_slider raises contrast (sigma 53,6 at +0.7) and does NOT lower
+#   saturation at -0.7 (69,9%), so it is not declared.
+#   The three "skin" adapters (imagefinish, natural_skin, texture) all smoothed
+#   detail away at 3x and are not declared.
+loras:
+  realism:
+    path: model/assets/loras/moss-dmd-int8/moss_realism_enhancer.safetensors
+    weight: 0.7
+
+expected_census:
+  artifacts: 4
+  bytes: 11450446383
+
+# The default box is 16:9 because the project's default output is SD 720p —
+# 1280x720 exactly — not because this model was trained at that shape:
+# 1280x720 = 921,600 px, the entry's whole ceiling, and a multiple of this model's
+# 16-pixel latent grid on both sides. Measured through the service at this box on
+# 2026-11-19, twice: 40.9 s and 41.7 s with a 6188 MiB card peak (see the block on
+# `steps` above). PNG is the format the service writes everywhere.
+defaults:
+  width: 1280
+  height: 720
+  format: png
+
+# A warm-up is a warm-up and not the default box: 512x512 is small, square, and a
+# multiple of this model's 16-pixel grid, so the adapter accepts it and it costs a
+# fraction of the 16:9 render it is preparing the page cache for.
+warmup:
+  width: 512
+  height: 512
+  prompt: warm up
+  seed: 0

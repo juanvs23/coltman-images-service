@@ -33,12 +33,15 @@ DEVICE = "cuda"
 _REGISTRY: dict[str, str] = {
     "zimage": "coltman_images.adapters.zimage:ZImageAdapter",
     "flux2klein_sd": "coltman_images.adapters.flux2klein_sd:Flux2KleinSdAdapter",
+    "moss": "coltman_images.adapters.moss:MossAdapter",
 }
 """Adapter name → `module:attribute`. Resolved lazily by `load_adapter`.
 
-Two rows, two different ways of owning a model: Z-Image's own FP8 loader, and
-FLUX.2's quantised GGUF behind a subprocess. The core does not know which is
-which — that is what the rows are for (protocol section 6.3).
+Three rows, two different ways of owning a model: Z-Image's own FP8 loader, and
+a quantised checkpoint behind a subprocess — FLUX.2 [klein]'s GGUF and
+MOSS-Image's int8 diffusion transformer with its GGUF encoder. The core does not
+know which is which, and it does not know that two of the three share a runtime —
+that is what the rows are for (protocol section 6.3).
 """
 
 __all__ = ["DEVICE", "AdapterError", "ModelAdapter", "load_adapter"]
